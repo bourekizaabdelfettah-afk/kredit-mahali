@@ -1,0 +1,1519 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#f0f7f2">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="Your Local Market">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.png">
+<link rel="apple-touch-icon" href="icon.png">
+<title>Your Local Market</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+
+<script>
+const SUPABASE_URL = 'https://inndhzupjwyaqafrnucb.supabase.co';
+const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlubmRoenVwand5YXFhZnJudWNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxODcxODcsImV4cCI6MjA4ODc2MzE4N30.S2GI2HmbFVaYxfEXrSW32XX35QKMZiEj2jS6umJEvq4';
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+const ADMIN_PASSWORD  = 'admin2025';
+const WORKER_PASSWORD = 'worker123';
+const LATE_DAYS = { regular: 30, occasional: 7 };
+const BACKUP_INTERVAL_DAYS = 7;
+const BACKUP_AUTO_DAYS = 8;
+
+// ── UTILS ──
+const money  = n => Math.abs(n).toLocaleString('fr-DZ');
+const fdate  = s => s ? new Date(s).toLocaleDateString('ar-DZ',{day:'2-digit',month:'short',year:'numeric'}) : '';
+const bal    = c => (c.transactions||[]).reduce((s,t)=>t.type==='debt'?s+t.amount:s-t.amount,0);
+const genCode= ()=>{
+  const L='ABCDEFGHJKLMNPQRSTUVWXYZ',N='0123456789';
+  return 'ZB-'+[...Array(2)].map(()=>L[Math.random()*L.length|0]).join('')+[...Array(4)].map(()=>N[Math.random()*N.length|0]).join('');
+};
+const lastDebtDate=c=>{
+  const d=(c.transactions||[]).filter(t=>t.type==='debt');
+  return d.length?new Date(Math.max(...d.map(t=>new Date(t.date)))):null;
+};
+const isLate=c=>{
+  if(bal(c)<=0)return false;
+  const ld=lastDebtDate(c);if(!ld)return false;
+  return Math.floor((Date.now()-ld)/86400000)>(c.customer_type==='regular'?LATE_DAYS.regular:LATE_DAYS.occasional);
+};
+const lateDays=c=>{
+  if(bal(c)<=0)return 0;
+  const ld=lastDebtDate(c);if(!ld)return 0;
+  const days=Math.floor((Date.now()-ld)/86400000);
+  return Math.max(0,days-(c.customer_type==='regular'?LATE_DAYS.regular:LATE_DAYS.occasional));
+};
+
+const $=id=>document.getElementById(id);
+const showLoader=s=>$('loader').style.display=s?'flex':'none';
+function showToast(msg,type='ok'){
+  const t=$('toast');t.textContent=msg;
+  t.className='toast show'+(type==='err'?' err':type==='warn'?' warn':'');
+  setTimeout(()=>t.className='toast',3500);
+}
+function showScreen(id){
+  document.querySelectorAll('.screen').forEach(s=>s.style.display='none');
+  $(id).style.display='block';
+}
+
+let allCustomers=[],selectedCustomer=null,currentFilter='all';
+
+// ── SETTINGS ──
+function getSettings(){
+  try{ return JSON.parse(localStorage.getItem('ylm_settings')||'{}'); }catch(e){ return {}; }
+}
+function saveSettings(s){ localStorage.setItem('ylm_settings',JSON.stringify(s)); }
+window.openSettings=()=>{
+  const s=getSettings();
+  $('set-shop').value=s.shopName||'Your Local Market';
+  $('set-phone').value=s.phone||'';
+  $('settings-modal').style.display='flex';
+};
+window.closeSettings=()=>$('settings-modal').style.display='none';
+window.doSaveSettings=()=>{
+  const s={shopName:$('set-shop').value.trim()||'Your Local Market',phone:$('set-phone').value.trim()};
+  saveSettings(s);
+  closeSettings();
+  showToast('✅ تم حفظ الإعدادات');
+};
+
+// ── BACKUP LOGIC ──
+function getLastBackup(){ return parseInt(localStorage.getItem('ylm_last_backup')||'0'); }
+function setLastBackup(){ localStorage.setItem('ylm_last_backup', Date.now().toString()); }
+function daysSinceBackup(){ return Math.floor((Date.now()-getLastBackup())/86400000); }
+
+function checkBackupReminder(){
+  if(!allCustomers.length) return;
+  const days=daysSinceBackup();
+  const reminderEl=$('backup-reminder');
+  if(days>=BACKUP_AUTO_DAYS){
+    // auto export
+    exportExcel(true);
+    setLastBackup();
+    reminderEl.style.display='none';
+  } else if(days>=BACKUP_INTERVAL_DAYS){
+    reminderEl.style.display='flex';
+  } else {
+    reminderEl.style.display='none';
+  }
+}
+
+async function exportExcel(auto=false){
+  if(!allCustomers.length){ showToast('لا يوجد بيانات للتصدير','warn'); return; }
+  try {
+    showLoader(true);
+
+    // Load SheetJS dynamically
+    if(typeof XLSX === 'undefined'){
+      await new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js';
+        s.onload = resolve; s.onerror = reject;
+        document.head.appendChild(s);
+      });
+    }
+
+    const wb = XLSX.utils.book_new();
+
+    // ── شيت ملخص لكل الزبائن ──
+    const summaryRows = [
+      ['الاسم', 'الكود', 'النوع', 'الرصيد (دج)', 'الحالة']
+    ];
+    allCustomers.forEach(c => {
+      const b = bal(c);
+      summaryRows.push([
+        c.name,
+        c.code,
+        c.customer_type === 'regular' ? 'دائم' : 'عارض',
+        b,
+        b > 0 ? 'دين' : b < 0 ? 'رصيد لصالحه' : 'صافي'
+      ]);
+    });
+    const wsSummary = XLSX.utils.aoa_to_sheet(summaryRows);
+    wsSummary['!cols'] = [{wch:20},{wch:12},{wch:10},{wch:14},{wch:16}];
+    XLSX.utils.book_append_sheet(wb, wsSummary, 'ملخص الزبائن');
+
+    // ── شيت لكل زبون ──
+    allCustomers.forEach(c => {
+      const b = bal(c);
+      const rows = [
+        ['الزبون:', c.name],
+        ['الكود:', c.code],
+        ['النوع:', c.customer_type === 'regular' ? 'دائم ⭐' : 'عارض 👤'],
+        ['الرصيد:', b + ' دج'],
+        [''],
+        ['نوع المعاملة', 'المبلغ (دج)', 'الوصف', 'التاريخ']
+      ];
+      if(!c.transactions || !c.transactions.length){
+        rows.push(['لا توجد معاملات', '', '', '']);
+      } else {
+        c.transactions.forEach(t => {
+          rows.push([
+            t.type === 'debt' ? 'دين' : 'دفعة',
+            t.amount,
+            t.desc || '—',
+            fdate(t.date)
+          ]);
+        });
+      }
+      // اسم الشيت: أول 28 حرف من اسم الزبون (Excel limit 31)
+      const sheetName = c.name.substring(0, 28).replace(/[\/\\?*\[\]]/g, '');
+      const ws = XLSX.utils.aoa_to_sheet(rows);
+      ws['!cols'] = [{wch:16},{wch:14},{wch:24},{wch:16}];
+      XLSX.utils.book_append_sheet(wb, ws, sheetName);
+    });
+
+    // تحميل الملف
+    const now = new Date();
+    const dateStr = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+    XLSX.writeFile(wb, `kredit-mahali-${dateStr}.xlsx`);
+
+    showLoader(false);
+    setLastBackup();
+    $('backup-reminder').style.display = 'none';
+    showToast(auto ? '💾 تم التصدير التلقائي!' : '✅ تم تصدير البيانات بنجاح');
+  } catch(e) {
+    showLoader(false);
+    showToast('❌ خطأ في التصدير','err');
+  }
+}
+
+// ── BOOT ──
+window.addEventListener('DOMContentLoaded',async()=>{
+  $('pw-inp').addEventListener('keydown',e=>{if(e.key==='Enter')doLogin();});
+  $('code-inp').addEventListener('keydown',e=>{if(e.key==='Enter')checkCustomerCode();});
+  window.addEventListener('beforeinstallprompt',e=>{
+    e.preventDefault();window._pwa=e;
+    $('install-bar').style.display='flex';
+  });
+  const role=sessionStorage.getItem('ylm_role');
+  const code=localStorage.getItem('ylm_code');
+  if(role==='admin'){showScreen('admin-screen');await loadAll();}
+  else if(role==='worker'){showScreen('worker-screen');await loadAllWorker();}
+  else if(code){await autoLoginCustomer(code);}
+  else showScreen('entry-screen');
+});
+
+window.installApp=async()=>{
+  if(!window._pwa)return;
+  window._pwa.prompt();await window._pwa.userChoice;
+  window._pwa=null;$('install-bar').style.display='none';
+};
+
+// ── ENTRY ──
+window.switchToPassword=()=>{$('code-panel').style.display='none';$('login-panel').style.display='block';};
+window.switchToCode=()=>{$('login-panel').style.display='none';$('code-panel').style.display='block';};
+
+window.doLogin=()=>{
+  const v=$('pw-inp').value.trim();
+  $('login-err').style.display='none';
+  if(v===ADMIN_PASSWORD){sessionStorage.setItem('ylm_role','admin');$('pw-inp').value='';showScreen('admin-screen');loadAll();}
+  else if(v===WORKER_PASSWORD){sessionStorage.setItem('ylm_role','worker');$('pw-inp').value='';showScreen('worker-screen');loadAllWorker();}
+  else{$('login-err').textContent='❌ كلمة السر غير صحيحة';$('login-err').style.display='block';}
+};
+
+window.checkCustomerCode=async()=>{
+  const code=$('code-inp').value.trim().toUpperCase();
+  const err=$('code-err');
+  if(!code){err.textContent='أدخل الكود';err.style.display='block';return;}
+  err.style.display='none';
+  showLoader(true);
+  const {data,error}=await sb.from('customers').select('*').eq('code',code).single();
+  showLoader(false);
+  if(error||!data){err.textContent='❌ الكود غير صحيح، تواصل مع المحل';err.style.display='block';return;}
+  localStorage.setItem('ylm_code',code);
+  renderCustomerView(data);startRT(data.id);
+};
+
+async function autoLoginCustomer(code){
+  showLoader(true);
+  const {data}=await sb.from('customers').select('*').eq('code',code).single();
+  showLoader(false);
+  if(data){renderCustomerView(data);startRT(data.id);}
+  else{localStorage.removeItem('ylm_code');showScreen('entry-screen');}
+}
+
+// ── CUSTOMER ──
+function renderCustomerView(c){
+  const b=bal(c);
+  showScreen('customer-screen');
+  $('c-name').textContent=c.name;
+  $('c-bal').textContent=money(b);
+  $('c-bal').style.color=b>0?'#dc2626':'#16a34a';
+  $('c-lbl').textContent=b>0?'💸 مبلغ الدين':b<0?'✅ رصيد لصالحك':'✅ حسابك صافي';
+  const txns=[...(c.transactions||[])].reverse();
+  $('c-history').innerHTML=!txns.length
+    ?'<div class="no-txn">لا توجد معاملات بعد</div>'
+    :txns.map(t=>`<div class="ti">
+        <div class="td-dot ${t.type}"></div>
+        <div class="ti-info"><div class="ti-desc">${t.desc||'—'}</div><div class="ti-date">${fdate(t.date)}</div></div>
+        <div class="ti-amt ${t.type}">${t.type==='debt'?'+':'-'} ${money(t.amount)} دج</div>
+      </div>`).join('');
+}
+function startRT(id){
+  sb.channel('c-'+id).on('postgres_changes',{event:'UPDATE',schema:'public',table:'customers',filter:`id=eq.${id}`},
+    p=>renderCustomerView(p.new)).subscribe();
+}
+window.logoutCustomer=()=>{localStorage.removeItem('ylm_code');showScreen('entry-screen');$('code-inp').value='';};
+
+// ── ADMIN ──
+window.logoutAdmin=()=>{sessionStorage.removeItem('ylm_role');showScreen('entry-screen');};
+
+async function loadAll(){
+  showLoader(true);
+  const {data,error}=await sb.from('customers').select('*').order('name');
+  showLoader(false);
+  if(error){showToast('❌ خطأ في تحميل البيانات','err');return;}
+  allCustomers=data||[];
+  renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+  checkBackupReminder();
+}
+
+function renderAdminStats(){
+  const totalDebt=allCustomers.reduce((s,c)=>{const b=bal(c);return b>0?s+b:s;},0);
+  $('a-stat-total').textContent=allCustomers.length;
+  $('a-stat-late').textContent=allCustomers.filter(c=>isLate(c)).length;
+  $('a-stat-debt').textContent=money(totalDebt)+' دج';
+  $('a-stat-reg').textContent=allCustomers.filter(c=>c.customer_type==='regular').length;
+  $('a-stat-occ').textContent=allCustomers.filter(c=>c.customer_type!=='regular').length;
+}
+
+function renderAlertBanner(){
+  const late=allCustomers.filter(c=>isLate(c)&&bal(c)>0);
+  const el=$('alert-banner');
+  if(!late.length){el.style.display='none';return;}
+  el.style.display='block';
+  el.innerHTML=`<div class="ab-hd"><span>⚠️ ${late.length} زبون متأخر في السداد</span><button class="ab-btn" onclick="applyFilter('late')">عرضهم</button></div>
+    <div class="ab-list">${late.map(c=>`<div class="ab-item" onclick="openCustomerDetail('${c.id}',true)">
+      <span class="ab-name">${c.name}</span>
+      <span class="ab-tag ${c.customer_type==='regular'?'regular':'occasional'}">${c.customer_type==='regular'?'⭐':'👤'}</span>
+      <span class="ab-days">تأخر ${lateDays(c)} يوم</span>
+      <span class="ab-bal">${money(bal(c))} دج</span>
+    </div>`).join('')}</div>`;
+}
+
+window.applyFilter=f=>{
+  currentFilter=f;
+  document.querySelectorAll('.filter-btn').forEach(b=>b.classList.remove('active'));
+  const fb=$('filter-'+f);if(fb)fb.classList.add('active');
+  let list=[...allCustomers];
+  if(f==='late')list=list.filter(c=>isLate(c));
+  else if(f==='regular')list=list.filter(c=>c.customer_type==='regular');
+  else if(f==='occasional')list=list.filter(c=>c.customer_type!=='regular');
+  const q=$('a-search').value.trim().toLowerCase();
+  if(q)list=list.filter(c=>c.name.toLowerCase().includes(q)||c.code.toLowerCase().includes(q));
+  renderCustList('a-cust-list',list,true);
+};
+window.adminSearch=()=>applyFilter(currentFilter);
+
+// ── WORKER ──
+window.logoutWorker=()=>{sessionStorage.removeItem('ylm_role');showScreen('entry-screen');};
+
+async function loadAllWorker(){
+  showLoader(true);
+  const {data,error}=await sb.from('customers').select('*').order('name');
+  showLoader(false);
+  if(error){showToast('❌ خطأ في التحميل','err');return;}
+  allCustomers=data||[];
+  renderWorkerList('');
+}
+
+function renderWorkerList(q){
+  const list=q?allCustomers.filter(c=>c.name.includes(q)||c.code.includes(q.toUpperCase())):allCustomers;
+  const el=$('w-list');
+  if(!list.length){
+    el.innerHTML=`<div class="w-empty">${q?'🔍 لا توجد نتائج':'لا يوجد زبائن بعد'}</div>`;
+    return;
+  }
+  el.innerHTML=list.map(c=>{
+    const b=bal(c);
+    const isReg=c.customer_type==='regular';
+    const late=isLate(c);
+    return `<div class="w-card" onclick="openWorkerAction('${c.id}')">
+      <div class="w-av ${isReg?'reg':'occ'}">${c.name.charAt(0)}</div>
+      <div class="w-info">
+        <div class="w-cname">${c.name}</div>
+        <div class="w-badges">
+          <span class="wbadge ${isReg?'regular':'occasional'}">${isReg?'⭐ دائم':'👤 عارض'}</span>
+          ${late?`<span class="wbadge late">⚠️ متأخر</span>`:''}
+        </div>
+      </div>
+      <div class="w-bal ${b>0?'debt':b<0?'credit':'zero'}">
+        <div class="w-amt">${money(b)}</div>
+        <div class="w-tag">${b>0?'دين':b<0?'رصيد':'صافي'}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+window.workerSearch=()=>{
+  renderWorkerList($('w-search').value.trim());
+};
+
+// فتح نافذة عمل العامل
+window.openWorkerAction=(id)=>{
+  selectedCustomer=allCustomers.find(c=>c.id===id);
+  if(!selectedCustomer)return;
+  renderWorkerAction(selectedCustomer);
+  $('worker-action-modal').style.display='flex';
+};
+window.closeWorkerAction=()=>{
+  $('worker-action-modal').style.display='none';
+  selectedCustomer=null;
+  $('wa-amount').value='';
+  $('wa-desc').value='';
+  $('wa-step1').style.display='block';
+  $('wa-step2').style.display='none';
+};
+
+let workerTxnType='debt';
+
+function renderWorkerAction(c){
+  const b=bal(c);
+  const isReg=c.customer_type==='regular';
+  $('wa-name').textContent=c.name;
+  $('wa-type-badge').textContent=isReg?'⭐ زبون دائم':'👤 زبون عارض';
+  $('wa-type-badge').className='wa-tbadge '+(isReg?'regular':'occasional');
+  $('wa-bal').textContent=money(b)+' دج';
+  $('wa-bal').style.color=b>0?'#dc2626':'#16a34a';
+  $('wa-bal-lbl').textContent=b>0?'💸 دين حالي':b<0?'✅ رصيد لصالحه':'✅ حسابه صافي';
+
+  // آخر معاملة
+  const txns=c.transactions||[];
+  const lastTxn=txns.length?txns[txns.length-1]:null;
+  const lastEl=$('wa-last');
+  if(lastTxn){
+    lastEl.style.display='flex';
+    $('wa-last-txt').textContent=`${lastTxn.type==='debt'?'💸 آخر دين':'✅ آخر دفعة'}: ${money(lastTxn.amount)} دج — ${fdate(lastTxn.date)}`;
+  } else {
+    lastEl.style.display='none';
+  }
+  $('wa-step1').style.display='block';
+  $('wa-step2').style.display='none';
+  $('wa-amount').value='';$('wa-desc').value='';
+}
+
+window.selectWorkerTxnType=(type)=>{
+  workerTxnType=type;
+  $('wa-step1').style.display='none';
+  $('wa-step2').style.display='block';
+  $('wa-step2-title').textContent=type==='debt'?'💸 كم المبلغ؟':'✅ كم المبلغ المدفوع؟';
+  $('wa-step2-title').style.color=type==='debt'?'#dc2626':'#16a34a';
+  $('wa-amount').focus();
+};
+
+window.backToStep1=()=>{
+  $('wa-step2').style.display='none';
+  $('wa-step1').style.display='block';
+};
+
+window.confirmWorkerTxn=async()=>{
+  if(!selectedCustomer)return;
+  const amount=parseFloat($('wa-amount').value);
+  if(!amount||amount<=0){showToast('❌ أدخل المبلغ','err');return;}
+  const desc=$('wa-desc').value.trim()||(workerTxnType==='debt'?'دين':'دفعة');
+  const updatedTxns=[...(selectedCustomer.transactions||[]),{type:workerTxnType,amount,desc,date:new Date().toISOString()}];
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ في الحفظ','err');return;}
+  selectedCustomer=data;
+  const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  closeWorkerAction();
+  renderWorkerList($('w-search').value.trim());
+  showToast(workerTxnType==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
+};
+
+window.deleteLastWorkerTxn=async()=>{
+  if(!selectedCustomer)return;
+  const txns=selectedCustomer.transactions||[];
+  if(!txns.length){showToast('لا توجد معاملات','warn');return;}
+  const last=txns[txns.length-1];
+  if(!confirm(`حذف آخر معاملة؟\n${last.type==='debt'?'دين':'دفعة'}: ${money(last.amount)} دج\n${fdate(last.date)}`))return;
+  const updated=txns.slice(0,-1);
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:updated}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;
+  const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderWorkerAction(data);
+  renderWorkerList($('w-search').value.trim());
+  showToast('🗑 تم حذف آخر معاملة');
+};
+
+// ── SHARED LIST ──
+function renderCustList(elId,list,isAdmin){
+  const el=$(elId);
+  if(!list.length){el.innerHTML='<div class="empty">لا يوجد زبائن</div>';return;}
+  el.innerHTML=list.map(c=>{
+    const b=bal(c),late=isLate(c),isReg=c.customer_type==='regular';
+    return `<div class="cust-card${late?' late':''}" onclick="openCustomerDetail('${c.id}',${isAdmin})">
+      <div class="cc-av ${isReg?'reg':'occ'}">${c.name.charAt(0)}</div>
+      <div class="cc-info">
+        <div class="cc-name">${c.name}
+          <span class="tbadge ${isReg?'regular':'occasional'}">${isReg?'⭐ دائم':'👤 عارض'}</span>
+          ${late?`<span class="lbadge">⚠️ ${lateDays(c)} يوم</span>`:''}
+        </div>
+        <div class="cc-code">${c.code}</div>
+      </div>
+      <div class="cc-bal ${b>0?'debt':b<0?'credit':'zero'}">
+        <div class="cc-amt">${money(b)}</div>
+        <div class="cc-tag">${b>0?'دين':b<0?'رصيد':'صافي'}</div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── ADD CUSTOMER ──
+window.showAddModal=()=>{
+  $('add-modal').style.display='flex';
+  $('new-code').value=genCode();
+  $('new-name').value='';$('new-phone').value='';$('new-type').value='occasional';
+};
+window.closeAddModal=()=>$('add-modal').style.display='none';
+window.refreshCode=()=>$('new-code').value=genCode();
+window.saveCustomer=async()=>{
+  const name=$('new-name').value.trim();
+  const code=$('new-code').value.trim().toUpperCase();
+  const phone=$('new-phone').value.trim();
+  const customer_type=$('new-type').value;
+  if(!name||!code){showToast('❌ أدخل الاسم والكود','err');return;}
+  showLoader(true);
+  const {error}=await sb.from('customers').insert({name,code,phone,customer_type,transactions:[]});
+  showLoader(false);
+  if(error){showToast(error.code==='23505'?'❌ الكود مستخدم':'❌ خطأ: '+error.message,'err');return;}
+  closeAddModal();showToast('✅ تم إضافة الزبون');
+  const role=sessionStorage.getItem('ylm_role');
+  if(role==='admin')await loadAll();else await loadAllWorker();
+};
+
+// ── DETAIL MODAL ──
+window.openCustomerDetail=(id,isAdmin)=>{
+  selectedCustomer=allCustomers.find(c=>c.id===id);
+  if(!selectedCustomer)return;
+  renderDetailModal(selectedCustomer,isAdmin);
+  $('detail-modal').style.display='flex';
+};
+window.closeDetailModal=()=>{$('detail-modal').style.display='none';selectedCustomer=null;};
+
+function renderDetailModal(c,isAdmin){
+  const b=bal(c),late=isLate(c),isReg=c.customer_type==='regular';
+  $('dm-avatar').textContent=c.name.charAt(0);
+  $('dm-name').textContent=c.name;
+  $('dm-code').textContent=c.code;
+  $('dm-bal').textContent=money(b);
+  $('dm-bal').style.color=b>0?'#dc2626':'#16a34a';
+  $('dm-lbl').textContent=b>0?'💸 دين':b<0?'✅ رصيد لصالحه':'✅ صافي';
+  const lateEl=$('dm-late');
+  if(late){lateEl.style.display='block';lateEl.textContent=`⚠️ متأخر ${lateDays(c)} يوم (الحد: ${isReg?30:7} يوم)`;}
+  else lateEl.style.display='none';
+  $('dm-type-row').style.display=isAdmin?'flex':'none';
+  if(isAdmin)$('dm-type-sel').value=c.customer_type||'occasional';
+  $('dm-del-btn').style.display=isAdmin?'block':'none';
+  $('dm-no-del').style.display=isAdmin?'none':'block';
+  $('dm-admin-acts').style.display=isAdmin?'flex':'none';
+
+  // السجل مع أزرار التعديل والترتيب
+  const txns=c.transactions||[];
+  const reversed=[...txns].reverse();
+  $('dm-history').innerHTML=!txns.length
+    ?'<div class="no-txn">لا توجد معاملات</div>'
+    :reversed.map((t,ri)=>{
+      const realIdx=txns.length-1-ri; // الفهرس الحقيقي
+      return `<div class="txn-item" id="txn-${realIdx}">
+        <div class="txn-dot ${t.type}"></div>
+        <div class="txn-info">
+          <div class="txn-desc">${t.desc||'—'}</div>
+          <div class="txn-date">${fdate(t.date)}</div>
+        </div>
+        <div class="txn-amt ${t.type}">${t.type==='debt'?'+':'-'} ${money(t.amount)} دج</div>
+        ${isAdmin?`
+          <div class="txn-btns">
+            <button class="btn-edit-txn" onclick="openEditTxn(${realIdx})" title="تعديل">✏️</button>
+            ${realIdx>0?`<button class="btn-move-txn" onclick="moveTxn(${realIdx},'up')" title="تحريك للأعلى">↑</button>`:'<span class="btn-move-ph"></span>'}
+            ${realIdx<txns.length-1?`<button class="btn-move-txn" onclick="moveTxn(${realIdx},'down')" title="تحريك للأسفل">↓</button>`:'<span class="btn-move-ph"></span>'}
+            <button class="btn-del-txn" onclick="deleteTxn(${realIdx},true)" title="حذف">🗑</button>
+          </div>`:''}
+      </div>`;
+    }).join('');
+  $('dm-txn-desc').value='';$('dm-txn-amount').value='';$('dm-txn-type').value='debt';
+  $('detail-modal')._isAdmin=isAdmin;
+}
+
+// ── EDIT TRANSACTION ──
+window.openEditTxn=(idx)=>{
+  if(!selectedCustomer)return;
+  const t=selectedCustomer.transactions[idx];
+  if(!t)return;
+  $('edit-txn-idx').value=idx;
+  $('edit-txn-type').value=t.type;
+  $('edit-txn-amount').value=t.amount;
+  $('edit-txn-desc').value=t.desc||'';
+  // تحويل التاريخ لصيغة input date
+  const d=new Date(t.date);
+  const dateStr=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  $('edit-txn-date').value=dateStr;
+  $('edit-txn-modal').style.display='flex';
+};
+window.closeEditTxn=()=>$('edit-txn-modal').style.display='none';
+
+window.saveEditTxn=async()=>{
+  if(!selectedCustomer)return;
+  const idx=parseInt($('edit-txn-idx').value);
+  const amount=parseFloat($('edit-txn-amount').value);
+  const desc=$('edit-txn-desc').value.trim();
+  const dateVal=$('edit-txn-date').value;
+  const type=$('edit-txn-type').value;
+  if(!amount||amount<=0){showToast('❌ أدخل المبلغ','err');return;}
+  if(!dateVal){showToast('❌ أدخل التاريخ','err');return;}
+  const updatedTxns=[...(selectedCustomer.transactions||[])];
+  updatedTxns[idx]={...updatedTxns[idx],type,amount,desc:desc||(type==='debt'?'دين':'دفعة'),date:new Date(dateVal).toISOString()};
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;
+  const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  closeEditTxn();
+  renderDetailModal(data,true);
+  renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+  showToast('✅ تم تعديل المعاملة');
+};
+
+// ── REORDER TRANSACTION ──
+window.moveTxn=async(idx,dir)=>{
+  if(!selectedCustomer)return;
+  const txns=[...(selectedCustomer.transactions||[])];
+  const swapIdx=dir==='up'?idx-1:idx+1;
+  if(swapIdx<0||swapIdx>=txns.length)return;
+  [txns[idx],txns[swapIdx]]=[txns[swapIdx],txns[idx]];
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:txns}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;
+  const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderDetailModal(data,true);
+  showToast('↕️ تم تغيير الترتيب');
+};
+
+window.changeType=async()=>{
+  if(!selectedCustomer)return;
+  const newType=$('dm-type-sel').value;
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({customer_type:newType}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderDetailModal(data,true);renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+  showToast('✅ تم تغيير النوع');
+};
+
+window.addTransaction=async()=>{
+  if(!selectedCustomer)return;
+  const desc=$('dm-txn-desc').value.trim();
+  const amount=parseFloat($('dm-txn-amount').value);
+  const type=$('dm-txn-type').value;
+  const isAdmin=!!$('detail-modal')._isAdmin;
+  if(!amount||amount<=0){showToast('❌ أدخل المبلغ','err');return;}
+  // desc is optional - use default if empty
+  const finalDesc=desc||(type==='debt'?'دين':'دفعة');
+  const updatedTxns=[...(selectedCustomer.transactions||[]),{type,amount,desc:finalDesc,date:new Date().toISOString()}];
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ في الحفظ','err');return;}
+  selectedCustomer=data;const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderDetailModal(data,isAdmin);
+  if(isAdmin){renderAdminStats();renderAlertBanner();applyFilter(currentFilter);}
+  else{$('w-stat-debt').textContent=allCustomers.filter(c=>bal(c)>0).length;renderCustList('w-cust-list',allCustomers,false);}
+  showToast(type==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
+};
+
+window.deleteTxn=async(ri,isAdmin)=>{
+  if(!selectedCustomer||!confirm('حذف هذه المعاملة؟'))return;
+  const updatedTxns=[...(selectedCustomer.transactions||[])];updatedTxns.splice(ri,1);
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderDetailModal(data,isAdmin);renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+  showToast('🗑 تم حذف المعاملة');
+};
+
+window.deleteCustomer=async()=>{
+  if(!selectedCustomer||!confirm(`حذف "${selectedCustomer.name}" نهائياً؟`))return;
+  showLoader(true);
+  const {error}=await sb.from('customers').delete().eq('id',selectedCustomer.id);
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  closeDetailModal();showToast('🗑 تم حذف الزبون');await loadAll();
+};
+
+window.copyCode=()=>{
+  if(!selectedCustomer)return;
+  navigator.clipboard.writeText(`كودك: ${selectedCustomer.code}\nتابع حسابك: ${location.origin}`).then(()=>showToast('📋 تم نسخ الكود'));
+};
+
+// ── WHATSAPP SHARE ──
+window.shareWhatsApp=()=>{
+  if(!selectedCustomer)return;
+  const s=getSettings();
+  const shop=s.shopName||'Your Local Market';
+  const msg=`مرحباً ${selectedCustomer.name} 👋\n\nيمكنك الآن متابعة حسابك في ${shop} من هاتفك!\n\n📱 رابط التطبيق:\n${location.origin}\n\n🔑 كودك الخاص:\n${selectedCustomer.code}\n\nافتح الرابط وأدخل الكود لتتابع رصيدك في أي وقت ✅`;
+  const phone=selectedCustomer.phone?selectedCustomer.phone.replace(/\D/g,''):'';
+  const url=phone
+    ?`https://wa.me/213${phone.replace(/^0/,'')}?text=${encodeURIComponent(msg)}`
+    :`https://wa.me/?text=${encodeURIComponent(msg)}`;
+  window.open(url,'_blank');
+};
+
+// ── QR PRINT PAGE ──
+window.openQRPage=()=>{
+  const s=getSettings();
+  const shop=s.shopName||'Your Local Market';
+  const url=location.origin;
+  const html=`<!DOCTYPE html><html lang="ar" dir="rtl">
+<head><meta charset="UTF-8"><title>QR Code - ${shop}</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"><\/script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{font-family:'Cairo',sans-serif;background:#f5f7f5;display:flex;align-items:center;justify-content:center;min-height:100vh;padding:20px;}
+.card{background:white;border-radius:24px;padding:32px 28px;max-width:360px;width:100%;text-align:center;box-shadow:0 8px 40px rgba(26,122,74,.15);border:2px solid #e2ebe4;}
+.shop-ico{font-size:48px;margin-bottom:8px;}
+.shop-name{font-size:22px;font-weight:900;color:#1a7a4a;margin-bottom:4px;}
+.shop-sub{font-size:12px;color:#8aab90;margin-bottom:24px;letter-spacing:1px;}
+.qr-wrap{background:#f0f9f3;border-radius:18px;padding:20px;display:inline-block;margin-bottom:20px;border:2px solid #d4e4d8;}
+#qrcode{display:inline-block;}
+.scan-txt{font-size:16px;font-weight:900;color:#1a2e1f;margin-bottom:8px;}
+.scan-sub{font-size:13px;color:#4a6651;line-height:1.7;margin-bottom:20px;}
+.url-box{background:#f5f7f5;border:1.5px solid #e2ebe4;border-radius:10px;padding:10px 14px;font-size:13px;color:#1a7a4a;font-weight:700;word-break:break-all;margin-bottom:20px;}
+.steps{text-align:right;background:#f0f9f3;border-radius:14px;padding:16px;margin-bottom:24px;}
+.step{display:flex;align-items:center;gap:10px;margin-bottom:8px;font-size:13px;color:#1a2e1f;font-weight:700;}
+.step:last-child{margin-bottom:0;}
+.step-num{width:26px;height:26px;background:#1a7a4a;color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:900;flex-shrink:0;}
+.print-btn{background:linear-gradient(135deg,#1a7a4a,#22a865);color:white;border:none;padding:13px 32px;border-radius:12px;font-family:'Cairo',sans-serif;font-size:15px;font-weight:800;cursor:pointer;box-shadow:0 6px 20px rgba(26,122,74,.3);}
+@media print{.print-btn{display:none!important;}body{background:white;}card{box-shadow:none;}}
+</style></head>
+<body>
+<div class="card">
+  <div class="shop-ico">🏪</div>
+  <div class="shop-name">${shop}</div>
+  <div class="shop-sub">كريدي المحل — تابع حسابك</div>
+  <div class="qr-wrap"><div id="qrcode"></div></div>
+  <div class="scan-txt">📱 امسح الكود بكاميرا هاتفك</div>
+  <div class="scan-sub">أو افتح الرابط مباشرة</div>
+  <div class="url-box">${url}</div>
+  <div class="steps">
+    <div class="step"><div class="step-num">1</div><span>امسح الكود أو افتح الرابط</span></div>
+    <div class="step"><div class="step-num">2</div><span>أدخل كودك الخاص (ZB-XXXXXX)</span></div>
+    <div class="step"><div class="step-num">3</div><span>تابع رصيدك في أي وقت ✅</span></div>
+  </div>
+  <button class="print-btn" onclick="window.print()">🖨️ طباعة هذه البطاقة</button>
+</div>
+<script>
+new QRCode(document.getElementById('qrcode'),{
+  text:'${url}',width:180,height:180,
+  colorDark:'#1a7a4a',colorLight:'#f0f9f3',
+  correctLevel:QRCode.CorrectLevel.H
+});
+<\/script>
+</body></html>`;
+  const w=window.open('','_blank');
+  w.document.write(html);
+  w.document.close();
+};
+
+// ── EDIT PHONE ──
+window.editPhone=()=>{
+  if(!selectedCustomer)return;
+  $('edit-phone-val').value=selectedCustomer.phone||'';
+  $('edit-phone-modal').style.display='flex';
+};
+window.closeEditPhone=()=>$('edit-phone-modal').style.display='none';
+window.savePhone=async()=>{
+  if(!selectedCustomer)return;
+  const phone=$('edit-phone-val').value.trim();
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({phone}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;
+  const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  closeEditPhone();
+  renderDetailModal(data,!!$('detail-modal')._isAdmin);
+  showToast('✅ تم تحديث رقم الهاتف');
+};
+
+// ── SETTLEMENT ──
+window.settleAccount=async()=>{
+  if(!selectedCustomer)return;
+  const b=bal(selectedCustomer);
+  if(b===0){showToast('⚠️ الحساب صافي بالفعل','warn');return;}
+  const msg=b>0?`تسوية حساب ${selectedCustomer.name}؟\nالدين الحالي: ${money(b)} دج\nسيُسجَّل كمدفوع ويصبح الرصيد صفراً.`
+                :`تسوية حساب ${selectedCustomer.name}؟\nالرصيد لصالحه: ${money(Math.abs(b))} دج\nسيُصفَّر الحساب.`;
+  if(!confirm(msg))return;
+  const settleTxn={type:'payment',amount:Math.abs(b),desc:'✅ تسوية حساب — تم إغلاق الرصيد',date:new Date().toISOString()};
+  const updatedTxns=[...(selectedCustomer.transactions||[]),settleTxn];
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;
+  const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderDetailModal(data,true);renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+  showToast('✅ تم تسوية الحساب بنجاح');
+};
+
+// ── PRINT PDF ──
+window.printCustomerReport=()=>{
+  if(!selectedCustomer)return;
+  const c=selectedCustomer;
+  const s=getSettings();
+  const b=bal(c);
+  const txns=c.transactions||[];
+  const totalDebt=txns.filter(t=>t.type==='debt').reduce((s,t)=>s+t.amount,0);
+  const totalPaid=txns.filter(t=>t.type==='payment').reduce((s,t)=>s+t.amount,0);
+
+  let statusLine='';
+  if(b<=0) statusLine=`<div class="pr-status ok">✅ تم سداد المبلغ كاملاً — شكراً على ثقتك بنا 🌟</div>`;
+  else statusLine=`<div class="pr-status debt">⚠️ المبلغ المتبقي: <strong>${money(b)} دج</strong> — نشكر تعاونك 🤝</div>`;
+
+  const txnRows=txns.length?txns.map(t=>`
+    <tr>
+      <td>${t.type==='debt'?'💸 دين':'✅ دفعة'}</td>
+      <td style="font-weight:800;color:${t.type==='debt'?'#dc2626':'#16a34a'}">${t.type==='debt'?'+':'-'} ${money(t.amount)} دج</td>
+      <td>${t.desc||'—'}</td>
+      <td>${fdate(t.date)}</td>
+    </tr>`).join('')
+    :`<tr><td colspan="4" style="text-align:center;color:#888">لا توجد معاملات</td></tr>`;
+
+  const html=`<!DOCTYPE html><html lang="ar" dir="rtl">
+<head><meta charset="UTF-8"><title>تقرير حساب - ${c.name}</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+<style>
+  *{margin:0;padding:0;box-sizing:border-box;}
+  body{font-family:'Cairo',sans-serif;background:#fff;color:#1a2e1f;padding:30px;max-width:700px;margin:0 auto;}
+  .header{text-align:center;border-bottom:3px solid #1a7a4a;padding-bottom:18px;margin-bottom:20px;}
+  .shop-name{font-size:26px;font-weight:900;color:#1a7a4a;}
+  .shop-sub{font-size:13px;color:#888;margin-top:4px;}
+  .shop-phone{font-size:14px;font-weight:700;color:#4a6651;margin-top:6px;}
+  .doc-title{font-size:15px;font-weight:800;background:#f0f9f3;border:1.5px solid #d4e4d8;padding:8px 20px;border-radius:20px;display:inline-block;margin-top:12px;}
+  .info-grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:20px;}
+  .info-card{background:#f5f7f5;border:1.5px solid #e2ebe4;border-radius:12px;padding:12px 16px;}
+  .info-lbl{font-size:11px;color:#8aab90;font-weight:700;margin-bottom:4px;}
+  .info-val{font-size:15px;font-weight:900;}
+  table{width:100%;border-collapse:collapse;margin-bottom:20px;}
+  th{background:#1a7a4a;color:white;padding:10px 12px;font-size:13px;font-weight:700;}
+  td{padding:9px 12px;border-bottom:1px solid #e2ebe4;font-size:13px;}
+  tr:last-child td{border-bottom:none;}
+  tr:nth-child(even) td{background:#f9fbf9;}
+  .summary{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:18px;}
+  .sum-card{background:#f5f7f5;border:1.5px solid #e2ebe4;border-radius:12px;padding:12px;text-align:center;}
+  .sum-v{font-size:20px;font-weight:900;}
+  .sum-v.debt{color:#dc2626;}
+  .sum-v.paid{color:#16a34a;}
+  .sum-v.bal{color:#1a7a4a;}
+  .sum-l{font-size:11px;color:#8aab90;margin-top:3px;font-weight:600;}
+  .pr-status{padding:14px 18px;border-radius:12px;font-size:14px;font-weight:700;text-align:center;margin-bottom:18px;}
+  .pr-status.ok{background:#f0f9f3;border:2px solid #22a865;color:#1a7a4a;}
+  .pr-status.debt{background:#fef2f2;border:2px solid #fca5a5;color:#dc2626;}
+  .footer{text-align:center;color:#8aab90;font-size:11px;border-top:1px solid #e2ebe4;padding-top:14px;margin-top:10px;}
+  .print-date{font-size:11px;color:#aaa;text-align:left;margin-bottom:16px;}
+  @media print{body{padding:15px;}button{display:none!important;}}
+</style></head>
+<body>
+<div class="header">
+  <div class="shop-name">🏪 ${s.shopName||'Your Local Market'}</div>
+  <div class="shop-sub">كريدي المحل — سجل الحسابات</div>
+  ${s.phone?`<div class="shop-phone">📞 ${s.phone}</div>`:''}
+  <div class="doc-title">📄 وصل حساب رسمي</div>
+</div>
+<div class="print-date">تاريخ الطباعة: ${new Date().toLocaleDateString('ar-DZ',{weekday:'long',year:'numeric',month:'long',day:'numeric'})}</div>
+<div class="info-grid">
+  <div class="info-card"><div class="info-lbl">👤 اسم الزبون</div><div class="info-val">${c.name}</div></div>
+  <div class="info-card"><div class="info-lbl">🔑 الكود</div><div class="info-val" style="letter-spacing:2px;font-family:monospace">${c.code}</div></div>
+  <div class="info-card"><div class="info-lbl">🏷️ نوع الزبون</div><div class="info-val">${c.customer_type==='regular'?'⭐ دائم':'👤 عارض'}</div></div>
+  ${c.phone?`<div class="info-card"><div class="info-lbl">📞 الهاتف</div><div class="info-val">${c.phone}</div></div>`:''}
+</div>
+<div class="summary">
+  <div class="sum-card"><div class="sum-v debt">${money(totalDebt)} دج</div><div class="sum-l">إجمالي الديون</div></div>
+  <div class="sum-card"><div class="sum-v paid">${money(totalPaid)} دج</div><div class="sum-l">إجمالي المدفوع</div></div>
+  <div class="sum-card"><div class="sum-v bal">${money(Math.abs(b))} دج</div><div class="sum-l">${b>0?'المتبقي':b<0?'رصيد لصالحه':'الرصيد'}</div></div>
+</div>
+${statusLine}
+<table>
+  <thead><tr><th>النوع</th><th>المبلغ</th><th>الوصف</th><th>التاريخ</th></tr></thead>
+  <tbody>${txnRows}</tbody>
+</table>
+<div class="footer">
+  ${s.shopName||'Your Local Market'} ${s.phone?'• '+s.phone:''}<br>
+  هذا الوصل صادر من نظام كريدي المحل — ${new Date().getFullYear()}
+</div>
+<br>
+<div style="text-align:center">
+  <button onclick="window.print()" style="background:#1a7a4a;color:white;border:none;padding:12px 30px;border-radius:12px;font-family:Cairo,sans-serif;font-size:15px;font-weight:800;cursor:pointer;">🖨️ طباعة / حفظ PDF</button>
+</div>
+</body></html>`;
+
+  const w=window.open('','_blank');
+  w.document.write(html);
+  w.document.close();
+};
+
+window.doExport=()=>exportExcel(false);
+window.dismissBackupReminder=()=>{ $('backup-reminder').style.display='none'; };
+window.openInstallModal=()=>$('install-modal').style.display='flex';
+window.closeInstallModal=()=>$('install-modal').style.display='none';
+</script>
+<style>
+:root{
+  --bg:#f5f7f5;
+  --bg2:#ffffff;
+  --card:#ffffff;
+  --border:#e2ebe4;
+  --border2:#d4e4d8;
+  --text:#1a2e1f;
+  --text2:#4a6651;
+  --text3:#8aab90;
+  --green:#1a7a4a;
+  --green2:#22a865;
+  --green-light:#e8f5ed;
+  --green-pale:#f0f9f3;
+  --red:#dc2626;
+  --red-light:#fef2f2;
+  --orange:#d97706;
+  --orange-light:#fffbeb;
+  --gold:#b45309;
+  --shadow:0 2px 12px rgba(26,122,74,.08);
+  --shadow2:0 4px 24px rgba(26,122,74,.12);
+}
+*{margin:0;padding:0;box-sizing:border-box;-webkit-tap-highlight-color:transparent;}
+body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:var(--text);overflow-x:hidden;}
+
+/* LOADER */
+#loader{display:none;position:fixed;inset:0;background:rgba(255,255,255,.85);backdrop-filter:blur(4px);z-index:9999;align-items:center;justify-content:center;}
+.spin{width:40px;height:40px;border:3px solid var(--border);border-top-color:var(--green2);border-radius:50%;animation:spin .7s linear infinite;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* TOAST */
+.toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(120px);background:var(--text);color:white;padding:12px 22px;border-radius:14px;font-size:14px;font-weight:700;z-index:9998;transition:transform .3s;white-space:nowrap;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.15);}
+.toast.show{transform:translateX(-50%) translateY(0);}
+.toast.err{background:var(--red);}
+.toast.warn{background:var(--orange);}
+
+/* INSTALL BAR */
+#install-bar{display:none;position:fixed;bottom:0;left:0;right:0;background:var(--green);padding:13px 20px;align-items:center;justify-content:space-between;z-index:100;box-shadow:0 -4px 20px rgba(26,122,74,.2);}
+.ib-txt{color:white;font-size:13px;font-weight:700;}
+.ib-txt small{display:block;color:rgba(255,255,255,.7);font-size:11px;margin-top:1px;}
+.btn-inst{background:white;color:var(--green);border:none;padding:9px 20px;border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;}
+
+/* BACKUP REMINDER */
+#backup-reminder{display:none;background:var(--orange-light);border:1.5px solid #fcd34d;border-radius:14px;padding:13px 16px;margin-bottom:14px;align-items:center;gap:12px;}
+.br-txt{flex:1;font-size:13px;font-weight:700;color:var(--gold);}
+.br-txt small{display:block;font-size:11px;color:#92400e;margin-top:2px;font-weight:600;}
+.btn-br-export{background:var(--orange);color:white;border:none;padding:8px 14px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:800;cursor:pointer;white-space:nowrap;}
+.btn-br-skip{background:none;border:none;color:#92400e;font-size:18px;cursor:pointer;padding:4px;opacity:.6;}
+
+.screen{display:none;min-height:100vh;}
+
+/* ── ENTRY ── */
+#entry-screen{background:linear-gradient(160deg,#f0f9f4,#e8f5ed,#f5f7f5);display:flex;flex-direction:column;align-items:center;justify-content:center;padding:24px;position:relative;overflow:hidden;}
+#entry-screen::before{content:'';position:absolute;top:-80px;right:-60px;width:300px;height:300px;background:radial-gradient(circle,rgba(34,168,101,.12) 0%,transparent 65%);border-radius:50%;pointer-events:none;}
+#entry-screen::after{content:'';position:absolute;bottom:-80px;left:-60px;width:250px;height:250px;background:radial-gradient(circle,rgba(180,83,9,.07) 0%,transparent 65%);border-radius:50%;pointer-events:none;}
+.ew{width:100%;max-width:380px;position:relative;z-index:1;}
+.logo{text-align:center;margin-bottom:28px;}
+.logo-box{width:84px;height:84px;background:linear-gradient(135deg,var(--green),var(--green2));border-radius:22px;display:flex;align-items:center;justify-content:center;font-size:40px;margin:0 auto 14px;box-shadow:var(--shadow2);}
+.logo-n{font-size:20px;font-weight:900;color:var(--text);}
+.logo-n em{color:var(--green);font-style:normal;}
+.logo-s{font-size:11px;color:var(--text3);margin-top:4px;letter-spacing:2px;text-transform:uppercase;}
+.panel{background:var(--card);border:1.5px solid var(--border);border-radius:22px;padding:26px 22px;box-shadow:var(--shadow2);}
+.panel-t{color:var(--text);font-size:17px;font-weight:900;margin-bottom:4px;}
+.panel-s{color:var(--text3);font-size:12px;margin-bottom:20px;}
+.inp{width:100%;padding:14px 16px;border:1.5px solid var(--border);border-radius:12px;background:var(--bg);color:var(--text);font-family:'Cairo',sans-serif;font-size:16px;outline:none;transition:all .2s;}
+.inp::placeholder{color:var(--text3);font-size:13px;}
+.inp:focus{border-color:var(--green2);background:white;box-shadow:0 0 0 3px rgba(34,168,101,.1);}
+.inp.code{font-size:20px;font-weight:900;text-align:center;letter-spacing:4px;}
+.err-box{color:var(--red);font-size:12px;margin:8px 0;text-align:center;display:none;background:var(--red-light);border:1px solid #fecaca;padding:8px 12px;border-radius:9px;font-weight:600;}
+.btn-main{width:100%;padding:14px;background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:16px;font-weight:800;cursor:pointer;box-shadow:0 6px 20px rgba(26,122,74,.3);margin-top:10px;transition:all .2s;}
+.btn-main:active{transform:scale(.98);}
+.switch-lnk{color:var(--text3);font-size:12px;text-align:center;margin-top:14px;cursor:pointer;}
+.switch-lnk span{color:var(--green);font-weight:700;}
+.hint{color:var(--text3);font-size:11px;text-align:center;margin-top:12px;line-height:1.8;}
+
+/* TOPBAR */
+.topbar{background:var(--bg2);border-bottom:1.5px solid var(--border);padding:13px 18px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:50;box-shadow:0 2px 8px rgba(26,122,74,.06);}
+.tb-l{display:flex;align-items:center;gap:10px;}
+.tb-ico{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;}
+.tb-ico.g{background:linear-gradient(135deg,var(--green),var(--green2));}
+.tb-ico.b{background:linear-gradient(135deg,#1e40af,#3b82f6);}
+.tb-ico.t{background:linear-gradient(135deg,#0f766e,#14b8a6);}
+.tb-title{color:var(--text);font-size:14px;font-weight:900;}
+.tb-sub{color:var(--text3);font-size:10px;}
+.tb-r{display:flex;align-items:center;gap:8px;}
+.rbadge{padding:4px 10px;border-radius:8px;font-size:11px;font-weight:700;}
+.rbadge.admin{background:#ede9fe;color:#6d28d9;border:1px solid #ddd6fe;}
+.rbadge.worker{background:var(--green-light);color:var(--green);border:1px solid var(--border2);}
+.btn-out{background:var(--bg);border:1.5px solid var(--border);color:var(--text2);padding:7px 12px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:11px;cursor:pointer;font-weight:700;}
+
+/* BODY */
+.body{padding:16px;max-width:600px;margin:0 auto;}
+
+/* STATS */
+.sg{display:grid;gap:10px;margin-bottom:16px;}
+.sg.c2{grid-template-columns:1fr 1fr;}
+.sg.c5{grid-template-columns:repeat(3,1fr);}
+.sc{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 10px;text-align:center;box-shadow:var(--shadow);}
+.sv{font-size:22px;font-weight:900;color:var(--green);}
+.sv.r{color:var(--red);font-size:12px;}
+.sv.o{color:var(--orange);}
+.sv.b{color:#2563eb;}
+.sv.t{color:#0d9488;}
+.sl{font-size:10px;color:var(--text3);margin-top:3px;font-weight:600;}
+
+/* EXPORT BTN */
+.export-btn{width:100%;display:flex;align-items:center;justify-content:center;gap:8px;padding:11px;background:var(--card);border:1.5px solid var(--border2);border-radius:12px;color:var(--green);font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;margin-bottom:14px;box-shadow:var(--shadow);transition:all .2s;}
+.export-btn:active{background:var(--green-light);}
+
+/* ALERT */
+#alert-banner{display:none;background:var(--orange-light);border:1.5px solid #fcd34d;border-radius:14px;padding:14px;margin-bottom:14px;}
+.ab-hd{display:flex;align-items:center;justify-content:space-between;color:var(--gold);font-size:13px;font-weight:800;margin-bottom:10px;}
+.ab-btn{background:var(--orange);color:white;border:none;padding:5px 12px;border-radius:8px;font-family:'Cairo',sans-serif;font-size:12px;cursor:pointer;font-weight:700;}
+.ab-item{display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid rgba(0,0,0,.06);cursor:pointer;}
+.ab-item:last-child{border-bottom:none;}
+.ab-name{flex:1;color:var(--text);font-size:13px;font-weight:700;}
+.ab-tag{font-size:10px;padding:2px 7px;border-radius:6px;font-weight:700;}
+.ab-tag.regular{background:#ede9fe;color:#6d28d9;}
+.ab-tag.occasional{background:var(--green-light);color:var(--green);}
+.ab-days{font-size:11px;color:var(--orange);font-weight:700;}
+.ab-bal{font-size:13px;font-weight:900;color:var(--red);direction:ltr;}
+
+/* FILTERS */
+.filters{display:flex;gap:7px;margin-bottom:12px;overflow-x:auto;padding-bottom:4px;}
+.filter-btn{background:var(--card);border:1.5px solid var(--border);color:var(--text2);padding:7px 14px;border-radius:20px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;flex-shrink:0;transition:all .2s;}
+.filter-btn.active{background:var(--green);border-color:var(--green);color:white;}
+#filter-late.active{background:var(--orange);border-color:var(--orange);color:white;}
+
+/* ACTIONS */
+.abar{display:flex;gap:10px;margin-bottom:12px;}
+.sw{flex:1;position:relative;}
+.si{width:100%;padding:11px 16px 11px 36px;background:var(--card);border:1.5px solid var(--border);border-radius:12px;color:var(--text);font-family:'Cairo',sans-serif;font-size:14px;outline:none;box-shadow:var(--shadow);}
+.si:focus{border-color:var(--green2);}
+.si-ico{position:absolute;left:12px;top:50%;transform:translateY(-50%);color:var(--text3);}
+.btn-add{background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;padding:11px 18px;border-radius:12px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;white-space:nowrap;box-shadow:0 4px 14px rgba(26,122,74,.25);}
+
+/* CARDS */
+.cust-card{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:13px 15px;display:flex;align-items:center;gap:12px;margin-bottom:9px;cursor:pointer;transition:all .15s;box-shadow:var(--shadow);}
+.cust-card:active{transform:scale(.99);background:var(--green-pale);}
+.cust-card.late{border-color:#fcd34d;background:var(--orange-light);}
+.cc-av{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:19px;font-weight:900;flex-shrink:0;color:white;}
+.cc-av.reg{background:linear-gradient(135deg,#4f46e5,#7c3aed);}
+.cc-av.occ{background:linear-gradient(135deg,var(--green),var(--green2));}
+.cc-info{flex:1;min-width:0;}
+.cc-name{font-size:14px;font-weight:800;color:var(--text);display:flex;align-items:center;gap:5px;flex-wrap:wrap;}
+.cc-code{font-size:11px;color:var(--text3);margin-top:2px;font-family:monospace;font-weight:600;}
+.tbadge{font-size:10px;padding:2px 8px;border-radius:6px;font-weight:700;}
+.tbadge.regular{background:#ede9fe;color:#6d28d9;}
+.tbadge.occasional{background:var(--green-light);color:var(--green);}
+.lbadge{font-size:10px;padding:2px 8px;border-radius:6px;background:var(--orange-light);color:var(--orange);font-weight:700;border:1px solid #fcd34d;}
+.cc-bal{text-align:left;flex-shrink:0;}
+.cc-amt{font-size:15px;font-weight:900;direction:ltr;}
+.cc-tag{font-size:10px;margin-top:2px;text-align:center;font-weight:600;}
+.cc-bal.debt .cc-amt,.cc-bal.debt .cc-tag{color:var(--red);}
+.cc-bal.credit .cc-amt,.cc-bal.credit .cc-tag{color:var(--green);}
+.cc-bal.zero .cc-amt,.cc-bal.zero .cc-tag{color:var(--text3);}
+.empty{color:var(--text3);text-align:center;padding:40px;font-size:14px;}
+
+/* CUSTOMER VIEW */
+#customer-screen{background:var(--bg);}
+.acc-body{padding:16px;max-width:520px;margin:0 auto;}
+.welcome{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow);}
+.w-ico{font-size:28px;}
+.w-name{color:var(--text);font-size:16px;font-weight:800;}
+.w-sub{color:var(--text3);font-size:11px;margin-top:2px;}
+.bal-box{background:linear-gradient(135deg,var(--green),var(--green2));border-radius:22px;padding:28px;text-align:center;margin-bottom:16px;box-shadow:0 12px 40px rgba(26,122,74,.25);}
+.bl{color:rgba(255,255,255,.75);font-size:12px;margin-bottom:8px;font-weight:600;}
+#c-bal{font-size:52px;font-weight:900;direction:ltr;line-height:1;color:white;}
+.bc{color:rgba(255,255,255,.7);font-size:13px;margin-top:5px;}
+#c-lbl{font-size:13px;margin-top:6px;color:rgba(255,255,255,.9);font-weight:700;}
+.ro{display:inline-flex;align-items:center;gap:5px;background:rgba(255,255,255,.2);color:rgba(255,255,255,.8);padding:6px 14px;border-radius:20px;font-size:11px;margin-top:12px;font-weight:600;}
+.hist-box{background:var(--card);border:1.5px solid var(--border);border-radius:18px;overflow:hidden;margin-bottom:80px;box-shadow:var(--shadow);}
+.hh{padding:14px 17px;border-bottom:1.5px solid var(--border);background:var(--green-pale);}
+.hh-t{color:var(--text);font-size:14px;font-weight:800;}
+.ti{padding:12px 17px;display:flex;align-items:center;border-bottom:1px solid var(--border);transition:background .15s;}
+.ti:last-child{border-bottom:none;}
+.ti:active{background:var(--green-pale);}
+.td-dot{width:10px;height:10px;border-radius:50%;margin-left:12px;flex-shrink:0;}
+.td-dot.debt{background:var(--red);}
+.td-dot.payment{background:var(--green2);}
+.ti-info{flex:1;}
+.ti-desc{color:var(--text);font-size:13px;font-weight:700;}
+.ti-date{color:var(--text3);font-size:11px;margin-top:2px;}
+.ti-amt{font-size:14px;font-weight:900;direction:ltr;}
+.ti-amt.debt{color:var(--red);}
+.ti-amt.payment{color:var(--green);}
+.no-txn{color:var(--text3);text-align:center;padding:30px;font-size:13px;}
+
+/* MODALS */
+.modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.3);backdrop-filter:blur(6px);z-index:200;align-items:flex-end;justify-content:center;}
+.mbox{background:var(--bg2);border-radius:26px 26px 0 0;padding:24px 20px 34px;width:100%;max-width:540px;max-height:93vh;overflow-y:auto;box-shadow:0 -8px 40px rgba(0,0,0,.12);}
+.mhd{display:flex;align-items:center;justify-content:space-between;margin-bottom:20px;}
+.mt{font-size:17px;font-weight:900;color:var(--text);}
+.btn-close{background:var(--bg);border:1.5px solid var(--border);color:var(--text2);width:32px;height:32px;border-radius:8px;cursor:pointer;font-size:16px;font-weight:700;}
+.frow{margin-bottom:13px;}
+.flbl{font-size:12px;color:var(--text2);margin-bottom:6px;display:block;font-weight:700;}
+.finp{width:100%;padding:13px 15px;background:var(--bg);border:1.5px solid var(--border);border-radius:12px;color:var(--text);font-family:'Cairo',sans-serif;font-size:15px;outline:none;transition:all .2s;}
+.finp:focus{border-color:var(--green2);background:white;box-shadow:0 0 0 3px rgba(34,168,101,.1);}
+.finp option{background:white;}
+.cwrap{display:flex;gap:8px;}
+.cwrap .finp{flex:1;text-align:center;letter-spacing:3px;font-weight:900;font-size:17px;}
+.btn-ref{background:var(--bg);border:1.5px solid var(--border);color:var(--text2);padding:13px 15px;border-radius:12px;cursor:pointer;font-size:18px;flex-shrink:0;}
+.btn-save{width:100%;padding:14px;background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;border-radius:12px;font-family:'Cairo',sans-serif;font-size:15px;font-weight:800;cursor:pointer;margin-top:6px;box-shadow:0 6px 20px rgba(26,122,74,.3);}
+
+/* DETAIL MODAL */
+.dm-top{text-align:center;margin-bottom:16px;}
+.dm-av{width:68px;height:68px;background:linear-gradient(135deg,var(--green),var(--green2));border-radius:20px;display:flex;align-items:center;justify-content:center;font-size:30px;font-weight:900;margin:0 auto 10px;color:white;box-shadow:0 8px 24px rgba(26,122,74,.25);}
+.dm-nm{font-size:20px;font-weight:900;color:var(--text);}
+.dm-cd{display:inline-block;background:var(--bg);border:1.5px solid var(--border);padding:4px 14px;border-radius:20px;font-size:12px;font-family:monospace;letter-spacing:2px;margin-top:6px;color:var(--text2);font-weight:700;}
+.dm-bb{background:linear-gradient(135deg,var(--green-pale),var(--green-light));border:1.5px solid var(--border2);border-radius:16px;padding:18px;text-align:center;margin-bottom:14px;}
+.dm-bn{font-size:40px;font-weight:900;direction:ltr;}
+.dm-bc{color:var(--text3);font-size:12px;margin-top:3px;font-weight:600;}
+#dm-lbl{font-size:13px;margin-top:4px;font-weight:700;}
+#dm-late{display:none;background:var(--orange-light);border:1.5px solid #fcd34d;color:var(--gold);padding:10px 14px;border-radius:10px;font-size:12px;font-weight:700;margin-bottom:12px;text-align:center;}
+.type-row{display:flex;align-items:center;gap:10px;margin-bottom:13px;background:var(--bg);border:1.5px solid var(--border);border-radius:12px;padding:11px 14px;}
+.trl{flex:1;font-size:13px;font-weight:700;color:var(--text2);}
+.type-row select{background:white;border:1.5px solid var(--border);color:var(--text);padding:7px 10px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:12px;outline:none;cursor:pointer;}
+.btn-ts{background:var(--green-light);border:1.5px solid var(--border2);color:var(--green);padding:7px 12px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.sect{font-size:12px;font-weight:800;color:var(--text3);margin-bottom:9px;margin-top:16px;text-transform:uppercase;letter-spacing:.5px;}
+.txn-form{background:var(--bg);border:1.5px solid var(--border);border-radius:14px;padding:14px;margin-bottom:14px;}
+.trow{display:flex;gap:8px;margin-bottom:9px;}
+.trow .finp{flex:1;padding:11px 12px;font-size:14px;}
+.btn-at{width:100%;padding:12px;background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;border-radius:11px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(26,122,74,.25);}
+.txn-hist{background:var(--bg);border:1.5px solid var(--border);border-radius:13px;overflow:hidden;margin-bottom:14px;}
+.txn-item{padding:11px 14px;display:flex;align-items:center;border-bottom:1px solid var(--border);transition:background .1s;}
+.txn-item:last-child{border-bottom:none;}
+.txn-item:active{background:var(--green-pale);}
+.txn-dot{width:9px;height:9px;border-radius:50%;margin-left:10px;flex-shrink:0;}
+.txn-dot.debt{background:var(--red);}
+.txn-dot.payment{background:var(--green2);}
+.txn-inf{flex:1;}
+.txn-desc{font-size:13px;font-weight:700;color:var(--text);}
+.txn-date{font-size:10px;color:var(--text3);margin-top:1px;}
+.txn-amt{font-size:13px;font-weight:900;direction:ltr;margin-left:6px;}
+.txn-amt.debt{color:var(--red);}
+.txn-amt.payment{color:var(--green);}
+.btn-del-txn{background:var(--red-light);border:1px solid #fecaca;color:var(--red);width:28px;height:28px;border-radius:8px;cursor:pointer;font-size:13px;flex-shrink:0;}
+.no-txn{color:var(--text3);text-align:center;padding:20px;font-size:13px;}
+.dm-acts{display:flex;gap:9px;margin-top:6px;flex-wrap:wrap;}
+.dm-acts2{display:flex;gap:9px;margin-top:9px;}
+.btn-copy{flex:1;padding:11px;background:var(--bg);border:1.5px solid var(--border);color:var(--text2);border-radius:11px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-whatsapp{padding:11px 13px;background:#f0fdf4;border:1.5px solid #86efac;color:#16a34a;border-radius:11px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-phone{padding:11px 13px;background:var(--bg);border:1.5px solid var(--border);color:var(--text2);border-radius:11px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-del-c{padding:11px 14px;background:var(--red-light);border:1.5px solid #fecaca;color:var(--red);border-radius:11px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;}
+.btn-settle{flex:1;padding:12px;background:#f0f9f3;border:1.5px solid var(--border2);color:var(--green);border-radius:11px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;}
+.btn-print{flex:1;padding:12px;background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;border-radius:11px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;box-shadow:0 4px 14px rgba(26,122,74,.2);}
+.btn-settings{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:white;padding:7px 11px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:11px;cursor:pointer;font-weight:700;}
+.no-del{background:var(--bg);border:1.5px solid var(--border);border-radius:10px;padding:9px 13px;font-size:11px;color:var(--text3);text-align:center;margin-top:10px;font-weight:600;}
+
+/* ══ WORKER SIMPLE UI ══ */
+.w-body{padding:16px;max-width:540px;margin:0 auto;}
+.w-search-wrap{position:relative;margin-bottom:12px;}
+.w-search-ico{position:absolute;right:16px;top:50%;transform:translateY(-50%);font-size:20px;}
+.w-search-inp{width:100%;padding:16px 50px 16px 16px;background:white;border:2px solid var(--border2);border-radius:16px;color:var(--text);font-family:'Cairo',sans-serif;font-size:17px;font-weight:700;outline:none;box-shadow:var(--shadow2);}
+.w-search-inp:focus{border-color:var(--green2);}
+.w-add-btn{width:100%;padding:13px;background:var(--green-light);border:2px dashed var(--border2);border-radius:14px;color:var(--green);font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;margin-bottom:14px;}
+.w-card{background:white;border:2px solid var(--border);border-radius:16px;padding:14px 16px;display:flex;align-items:center;gap:13px;margin-bottom:10px;cursor:pointer;box-shadow:var(--shadow);transition:all .15s;}
+.w-card:active{transform:scale(.98);background:var(--green-pale);}
+.w-av{width:48px;height:48px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:white;flex-shrink:0;}
+.w-av.reg{background:linear-gradient(135deg,#4f46e5,#7c3aed);}
+.w-av.occ{background:linear-gradient(135deg,var(--green),var(--green2));}
+.w-info{flex:1;}
+.w-cname{font-size:16px;font-weight:900;color:var(--text);margin-bottom:4px;}
+.w-badges{display:flex;gap:6px;flex-wrap:wrap;}
+.wbadge{font-size:11px;padding:3px 9px;border-radius:7px;font-weight:700;}
+.wbadge.regular{background:#ede9fe;color:#6d28d9;}
+.wbadge.occasional{background:var(--green-light);color:var(--green);}
+.wbadge.late{background:var(--orange-light);color:var(--orange);border:1px solid #fcd34d;}
+.w-bal{text-align:left;flex-shrink:0;}
+.w-amt{font-size:17px;font-weight:900;direction:ltr;}
+.w-tag{font-size:11px;font-weight:700;text-align:center;margin-top:2px;}
+.w-bal.debt .w-amt,.w-bal.debt .w-tag{color:var(--red);}
+.w-bal.credit .w-amt,.w-bal.credit .w-tag{color:var(--green);}
+.w-bal.zero .w-amt,.w-bal.zero .w-tag{color:var(--text3);}
+.w-empty{color:var(--text3);text-align:center;padding:50px 20px;font-size:15px;}
+/* WORKER ACTION MODAL */
+.wa-bal-box{background:var(--green-pale);border:2px solid var(--border2);border-radius:14px;padding:16px;text-align:center;margin-bottom:12px;}
+.wa-bal-lbl{font-size:12px;color:var(--text3);font-weight:700;margin-bottom:4px;}
+.wa-bal-num{font-size:36px;font-weight:900;direction:ltr;}
+.wa-tbadge{font-size:12px;padding:3px 12px;border-radius:8px;font-weight:700;display:inline-block;margin-top:4px;}
+.wa-tbadge.regular{background:#ede9fe;color:#6d28d9;}
+.wa-tbadge.occasional{background:var(--green-light);color:var(--green);}
+.wa-last{display:flex;align-items:center;gap:10px;background:var(--orange-light);border:1.5px solid #fcd34d;border-radius:12px;padding:10px 14px;margin-bottom:14px;}
+.wa-last-txt{flex:1;font-size:12px;font-weight:700;color:var(--gold);}
+.wa-del-last{background:var(--red-light);border:1px solid #fecaca;color:var(--red);padding:6px 12px;border-radius:8px;font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;}
+.wa-step-title{font-size:16px;font-weight:900;color:var(--text);text-align:center;margin-bottom:16px;}
+.wa-big-btns{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:8px;}
+.wa-big{padding:22px 10px;border-radius:18px;border:2.5px solid;cursor:pointer;text-align:center;transition:all .15s;background:white;}
+.wa-big:active{transform:scale(.96);}
+.wa-big.debt{border-color:#fca5a5;background:#fef2f2;}
+.wa-big.payment{border-color:var(--border2);background:var(--green-pale);}
+.wa-big-ico{font-size:36px;margin-bottom:8px;}
+.wa-big-lbl{font-size:15px;font-weight:900;color:var(--text);}
+.wa-amount-inp{width:100%;padding:18px;border:2.5px solid var(--border2);border-radius:16px;background:white;color:var(--text);font-family:'Cairo',sans-serif;font-size:32px;font-weight:900;text-align:center;outline:none;margin-bottom:12px;box-shadow:var(--shadow);}
+.wa-amount-inp:focus{border-color:var(--green2);}
+.wa-confirm-btn{width:100%;padding:16px;background:linear-gradient(135deg,var(--green),var(--green2));color:white;border:none;border-radius:14px;font-family:'Cairo',sans-serif;font-size:17px;font-weight:900;cursor:pointer;box-shadow:0 6px 20px rgba(26,122,74,.3);margin-bottom:10px;}
+.wa-back-btn{width:100%;padding:12px;background:var(--bg);border:1.5px solid var(--border);color:var(--text2);border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:700;cursor:pointer;}
+
+/* EDIT TXN BUTTONS */
+.txn-btns{display:flex;gap:4px;flex-shrink:0;align-items:center;}
+.btn-edit-txn{background:#eff6ff;border:1px solid #bfdbfe;color:#2563eb;width:28px;height:28px;border-radius:7px;cursor:pointer;font-size:12px;flex-shrink:0;}
+.btn-move-txn{background:var(--bg);border:1.5px solid var(--border);color:var(--text2);width:26px;height:26px;border-radius:7px;cursor:pointer;font-size:13px;font-weight:900;flex-shrink:0;}
+.btn-move-ph{display:inline-block;width:26px;height:26px;flex-shrink:0;}
+.btn-del-txn{background:var(--red-light);border:1px solid #fecaca;color:var(--red);width:28px;height:28px;border-radius:7px;cursor:pointer;font-size:12px;flex-shrink:0;}
+
+/* INSTALL GUIDE */
+.install-hint{font-size:12px;font-weight:700;}
+.install-os{background:var(--bg);border:1.5px solid var(--border);border-radius:14px;padding:14px;margin-bottom:10px;}
+.install-badge{font-size:13px;font-weight:900;color:var(--text);margin-bottom:12px;}
+.install-step{display:flex;align-items:flex-start;gap:10px;margin-bottom:9px;font-size:13px;color:var(--text2);}
+.install-step:last-child{margin-bottom:0;}
+.is-num{width:24px;height:24px;background:var(--green);color:white;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:900;flex-shrink:0;margin-top:1px;}
+.install-divider{text-align:center;color:var(--text3);font-size:12px;font-weight:700;margin:10px 0;}
+</style>
+</head>
+<body>
+
+<div id="loader"><div class="spin"></div></div>
+<div class="toast" id="toast"></div>
+<div id="install-bar">
+  <div class="ib-txt">📲 ثبّت التطبيق على جوالك<small>وصول سريع بدون متصفح</small></div>
+  <button class="btn-inst" onclick="installApp()">تثبيت</button>
+</div>
+
+<!-- ENTRY -->
+<div class="screen" id="entry-screen">
+  <div class="ew">
+    <div class="logo">
+      <div class="logo-box">🏪</div>
+      <div class="logo-n">Your <em>Local</em> Market</div>
+      <div class="logo-s">kredit • كريدي المحل</div>
+    </div>
+    <div class="panel" id="code-panel">
+      <div class="panel-t">مرحباً بك 👋</div>
+      <div class="panel-s">أدخل كودك لمتابعة حسابك</div>
+      <input type="text" id="code-inp" class="inp code" placeholder="ZB-XXXXXX" oninput="this.value=this.value.toUpperCase()">
+      <div id="code-err" class="err-box"></div>
+      <button class="btn-main" onclick="checkCustomerCode()">عرض حسابي ←</button>
+      <div class="hint">لا تعرف كودك؟ تواصل مع المحل<br>🔒 كودك خاص بك فقط</div>
+      <div class="switch-lnk" onclick="switchToPassword()">أنت صاحب المحل أو العامل؟ <span>اضغط هنا</span></div>
+    </div>
+    <div class="panel" id="login-panel" style="display:none;">
+      <div class="panel-t">دخول الموظفين 🔐</div>
+      <div class="panel-s">أدخل كلمة السر الخاصة بك</div>
+      <input type="password" id="pw-inp" class="inp" placeholder="كلمة السر">
+      <div id="login-err" class="err-box"></div>
+      <button class="btn-main" onclick="doLogin()">دخول ←</button>
+      <div class="switch-lnk" onclick="switchToCode()">زبون؟ <span>ادخل بكودك</span></div>
+    </div>
+  </div>
+</div>
+
+<!-- CUSTOMER -->
+<div class="screen" id="customer-screen">
+  <div class="topbar">
+    <div class="tb-l">
+      <div class="tb-ico g">🏪</div>
+      <div><div class="tb-title">Your Local Market</div><div class="tb-sub">🟢 متزامن تلقائياً</div></div>
+    </div>
+    <button class="btn-out" onclick="logoutCustomer()">خروج ↩</button>
+  </div>
+  <div class="acc-body">
+    <div class="welcome">
+      <div class="w-ico">👤</div>
+      <div><div class="w-name" id="c-name">-</div><div class="w-sub">مرحباً بك في Your Local Market</div></div>
+    </div>
+    <div class="bal-box">
+      <div class="bl">رصيدك الحالي</div>
+      <div id="c-bal">0</div>
+      <div class="bc">دينار جزائري (دج)</div>
+      <div id="c-lbl"></div>
+      <div class="ro">🔒 عرض فقط</div>
+      <div class="ro install-hint" onclick="openInstallModal()" style="cursor:pointer;background:rgba(255,255,255,.25);margin-top:8px;">📲 كيف أثبّت التطبيق؟</div>
+    </div>
+    <div class="hist-box">
+      <div class="hh"><div class="hh-t">📜 سجل المعاملات</div></div>
+      <div id="c-history"></div>
+    </div>
+  </div>
+</div>
+
+<!-- ADMIN -->
+<div class="screen" id="admin-screen">
+  <div class="topbar">
+    <div class="tb-l">
+      <div class="tb-ico b">🏪</div>
+      <div><div class="tb-title">Your Local Market</div><div class="tb-sub">لوحة التحكم</div></div>
+    </div>
+    <div class="tb-r">
+      <span class="rbadge admin">🔐 مدير</span>
+      <button class="btn-settings" onclick="openQRPage()">📲 QR</button>
+      <button class="btn-settings" onclick="openSettings()">⚙️ إعدادات</button>
+      <button class="btn-out" onclick="logoutAdmin()">خروج ↩</button>
+    </div>
+  </div>
+  <div class="body">
+    <!-- BACKUP REMINDER -->
+    <div id="backup-reminder" style="display:none;" class="backup-reminder" style="display:flex;align-items:center;gap:12px;background:#fffbeb;border:1.5px solid #fcd34d;border-radius:14px;padding:13px 16px;margin-bottom:14px;">
+      <div style="flex:1;">
+        <div style="font-size:13px;font-weight:800;color:#b45309;">💾 حان وقت النسخ الاحتياطي!</div>
+        <div style="font-size:11px;color:#92400e;margin-top:2px;">مضت 7 أيام على آخر نسخة — احفظ بياناتك الآن</div>
+      </div>
+      <button class="btn-br-export" onclick="doExport()">تصدير الآن</button>
+      <button class="btn-br-skip" onclick="dismissBackupReminder()">✕</button>
+    </div>
+
+    <div id="alert-banner"></div>
+
+    <div class="sg c5">
+      <div class="sc"><div class="sv" id="a-stat-total">0</div><div class="sl">كل الزبائن</div></div>
+      <div class="sc"><div class="sv o" id="a-stat-late">0</div><div class="sl">⚠️ متأخرون</div></div>
+      <div class="sc"><div class="sv r" id="a-stat-debt">0</div><div class="sl">الديون</div></div>
+      <div class="sc"><div class="sv b" id="a-stat-reg">0</div><div class="sl">⭐ دائمون</div></div>
+      <div class="sc"><div class="sv t" id="a-stat-occ">0</div><div class="sl">👤 عارضون</div></div>
+    </div>
+
+    <button class="export-btn" onclick="doExport()">💾 تصدير نسخة احتياطية Excel</button>
+
+    <div class="filters">
+      <button class="filter-btn active" id="filter-all" onclick="applyFilter('all')">الكل</button>
+      <button class="filter-btn" id="filter-late" onclick="applyFilter('late')">⚠️ المتأخرون</button>
+      <button class="filter-btn" id="filter-regular" onclick="applyFilter('regular')">⭐ الدائمون</button>
+      <button class="filter-btn" id="filter-occasional" onclick="applyFilter('occasional')">👤 العارضون</button>
+    </div>
+    <div class="abar">
+      <div class="sw"><span class="si-ico">🔍</span><input type="text" id="a-search" class="si" placeholder="ابحث بالاسم أو الكود..." oninput="adminSearch()"></div>
+      <button class="btn-add" onclick="showAddModal()">+ زبون</button>
+    </div>
+    <div id="a-cust-list"><div class="empty">جاري التحميل...</div></div>
+  </div>
+</div>
+
+<!-- WORKER -->
+<div class="screen" id="worker-screen">
+  <div class="topbar">
+    <div class="tb-l">
+      <div class="tb-ico t">🏪</div>
+      <div><div class="tb-title">Your Local Market</div><div class="tb-sub">واجهة العامل</div></div>
+    </div>
+    <div class="tb-r">
+      <span class="rbadge worker">👷 عامل</span>
+      <button class="btn-out" onclick="logoutWorker()">خروج ↩</button>
+    </div>
+  </div>
+  <div class="w-body">
+    <!-- بحث كبير -->
+    <div class="w-search-wrap">
+      <span class="w-search-ico">🔍</span>
+      <input type="text" id="w-search" class="w-search-inp" placeholder="اكتب اسم الزبون..." oninput="workerSearch()" autocomplete="off">
+    </div>
+    <!-- زر إضافة زبون -->
+    <button class="w-add-btn" onclick="showAddModal()">➕ إضافة زبون جديد</button>
+    <!-- قائمة الزبائن -->
+    <div id="w-list"><div class="w-empty">جاري التحميل...</div></div>
+  </div>
+</div>
+
+<!-- ADD MODAL -->
+<div class="modal" id="add-modal" onclick="if(event.target===this)closeAddModal()">
+  <div class="mbox">
+    <div class="mhd"><div class="mt">➕ زبون جديد</div><button class="btn-close" onclick="closeAddModal()">✕</button></div>
+    <div class="frow"><label class="flbl">👤 اسم الزبون</label><input type="text" id="new-name" class="finp" placeholder="مثال: أحمد بن علي"></div>
+    <div class="frow"><label class="flbl">🔑 كود الزبون</label>
+      <div class="cwrap"><input type="text" id="new-code" class="finp" oninput="this.value=this.value.toUpperCase()"><button class="btn-ref" onclick="refreshCode()">🔄</button></div>
+    </div>
+    <div class="frow"><label class="flbl">📞 الهاتف (اختياري)</label><input type="tel" id="new-phone" class="finp" placeholder="0555 000 000"></div>
+    <div class="frow"><label class="flbl">🏷️ نوع الزبون</label>
+      <select id="new-type" class="finp">
+        <option value="occasional">👤 عارض — يسدد خلال 7 أيام</option>
+        <option value="regular">⭐ دائم — يسدد خلال 30 يوم</option>
+      </select>
+    </div>
+    <button class="btn-save" onclick="saveCustomer()">حفظ الزبون ✓</button>
+  </div>
+</div>
+
+<!-- DETAIL MODAL -->
+<div class="modal" id="detail-modal" onclick="if(event.target===this)closeDetailModal()">
+  <div class="mbox">
+    <div class="mhd"><div class="mt">تفاصيل الزبون</div><button class="btn-close" onclick="closeDetailModal()">✕</button></div>
+    <div class="dm-top">
+      <div class="dm-av" id="dm-avatar">-</div>
+      <div class="dm-nm" id="dm-name">-</div>
+      <div class="dm-cd" id="dm-code">-</div>
+    </div>
+    <div id="dm-late"></div>
+    <div class="dm-bb">
+      <div class="dm-bn" id="dm-bal">0</div>
+      <div class="dm-bc">دينار جزائري (دج)</div>
+      <div id="dm-lbl"></div>
+    </div>
+    <div class="type-row" id="dm-type-row" style="display:none;">
+      <div class="trl">🏷️ نوع الزبون</div>
+      <select id="dm-type-sel"><option value="occasional">👤 عارض (7 أيام)</option><option value="regular">⭐ دائم (30 يوم)</option></select>
+      <button class="btn-ts" onclick="changeType()">تغيير ✓</button>
+    </div>
+    <div class="sect">➕ إضافة معاملة</div>
+    <div class="txn-form">
+      <div class="trow">
+        <select id="dm-txn-type" class="finp"><option value="debt">💸 دين</option><option value="payment">✅ دفعة</option></select>
+        <input type="number" id="dm-txn-amount" class="finp" placeholder="المبلغ (دج)" min="1">
+      </div>
+      <input type="text" id="dm-txn-desc" class="finp" placeholder="الوصف (اختياري)..." style="margin-bottom:9px;">
+      <button class="btn-at" onclick="addTransaction()">تسجيل ✓</button>
+    </div>
+    <div class="sect">📜 سجل المعاملات</div>
+    <div class="txn-hist" id="dm-history"></div>
+    <div class="dm-acts">
+      <button class="btn-copy" onclick="copyCode()">📋 نسخ الكود</button>
+      <button class="btn-whatsapp" onclick="shareWhatsApp()">📲 واتساب</button>
+      <button class="btn-phone" onclick="editPhone()">📞 تعديل</button>
+      <button class="btn-del-c" id="dm-del-btn" onclick="deleteCustomer()">🗑</button>
+    </div>
+    <div class="dm-acts2" id="dm-admin-acts" style="display:none;">
+      <button class="btn-settle" onclick="settleAccount()">✅ تسوية الحساب</button>
+      <button class="btn-print" onclick="printCustomerReport()">🖨️ طباعة تقرير</button>
+    </div>
+    <div class="no-del" id="dm-no-del">🔒 الحذف غير متاح — تواصل مع صاحب المحل</div>
+  </div>
+</div>
+
+<!-- WORKER ACTION MODAL -->
+<div class="modal" id="worker-action-modal" onclick="if(event.target===this)closeWorkerAction()">
+  <div class="mbox">
+    <div class="mhd">
+      <div>
+        <div class="mt" id="wa-name">-</div>
+        <span id="wa-type-badge" class="wa-tbadge">-</span>
+      </div>
+      <button class="btn-close" onclick="closeWorkerAction()">✕</button>
+    </div>
+
+    <!-- الرصيد الحالي -->
+    <div class="wa-bal-box">
+      <div class="wa-bal-lbl" id="wa-bal-lbl">الرصيد</div>
+      <div class="wa-bal-num" id="wa-bal">0</div>
+    </div>
+
+    <!-- آخر معاملة -->
+    <div class="wa-last" id="wa-last" style="display:none;">
+      <div class="wa-last-txt" id="wa-last-txt"></div>
+      <button class="wa-del-last" onclick="deleteLastWorkerTxn()">🗑 حذف</button>
+    </div>
+
+    <!-- STEP 1: اختر نوع العملية -->
+    <div id="wa-step1">
+      <div class="wa-step-title">ماذا تريد؟</div>
+      <div class="wa-big-btns">
+        <button class="wa-big debt" onclick="selectWorkerTxnType('debt')">
+          <div class="wa-big-ico">💸</div>
+          <div class="wa-big-lbl">تسجيل دين</div>
+        </button>
+        <button class="wa-big payment" onclick="selectWorkerTxnType('payment')">
+          <div class="wa-big-ico">✅</div>
+          <div class="wa-big-lbl">تسجيل دفعة</div>
+        </button>
+      </div>
+    </div>
+
+    <!-- STEP 2: أدخل المبلغ -->
+    <div id="wa-step2" style="display:none;">
+      <div class="wa-step-title" id="wa-step2-title">المبلغ؟</div>
+      <input type="number" id="wa-amount" class="wa-amount-inp" placeholder="0" min="1" inputmode="numeric">
+      <div class="wa-desc-wrap">
+        <input type="text" id="wa-desc" class="finp" placeholder="ملاحظة (اختياري)..." style="margin-bottom:12px;">
+      </div>
+      <button class="wa-confirm-btn" onclick="confirmWorkerTxn()">تأكيد ✓</button>
+      <button class="wa-back-btn" onclick="backToStep1()">← رجوع</button>
+    </div>
+  </div>
+</div>
+
+<!-- EDIT TRANSACTION MODAL -->
+<div class="modal" id="edit-txn-modal" onclick="if(event.target===this)closeEditTxn()">
+  <div class="mbox">
+    <div class="mhd"><div class="mt">✏️ تعديل المعاملة</div><button class="btn-close" onclick="closeEditTxn()">✕</button></div>
+    <input type="hidden" id="edit-txn-idx">
+    <div class="frow"><label class="flbl">النوع</label>
+      <select id="edit-txn-type" class="finp">
+        <option value="debt">💸 دين</option>
+        <option value="payment">✅ دفعة</option>
+      </select>
+    </div>
+    <div class="frow"><label class="flbl">المبلغ (دج)</label>
+      <input type="number" id="edit-txn-amount" class="finp" placeholder="المبلغ" min="1">
+    </div>
+    <div class="frow"><label class="flbl">الوصف (اختياري)</label>
+      <input type="text" id="edit-txn-desc" class="finp" placeholder="وصف المعاملة...">
+    </div>
+    <div class="frow"><label class="flbl">التاريخ</label>
+      <input type="date" id="edit-txn-date" class="finp">
+    </div>
+    <button class="btn-save" onclick="saveEditTxn()">حفظ التعديل ✓</button>
+  </div>
+</div>
+
+<!-- INSTALL GUIDE MODAL -->
+<div class="modal" id="install-modal" onclick="if(event.target===this)closeInstallModal()">
+  <div class="mbox">
+    <div class="mhd"><div class="mt">📲 كيف تثبت التطبيق؟</div><button class="btn-close" onclick="closeInstallModal()">✕</button></div>
+    <div class="install-os" id="install-android">
+      <div class="install-badge">🤖 Android — Chrome</div>
+      <div class="install-step"><div class="is-num">1</div><div>افتح الرابط في متصفح <strong>Chrome</strong></div></div>
+      <div class="install-step"><div class="is-num">2</div><div>اضغط على النقاط الثلاث <strong>⋮</strong> في أعلى اليمين</div></div>
+      <div class="install-step"><div class="is-num">3</div><div>اختر <strong>"إضافة إلى الشاشة الرئيسية"</strong></div></div>
+      <div class="install-step"><div class="is-num">4</div><div>اضغط <strong>"إضافة"</strong> — سيظهر أيقونة التطبيق على هاتفك ✅</div></div>
+    </div>
+    <div class="install-divider">أو</div>
+    <div class="install-os">
+      <div class="install-badge">🍎 iPhone — Safari</div>
+      <div class="install-step"><div class="is-num">1</div><div>افتح الرابط في متصفح <strong>Safari</strong> فقط</div></div>
+      <div class="install-step"><div class="is-num">2</div><div>اضغط على زر <strong>المشاركة</strong> في أسفل الشاشة</div></div>
+      <div class="install-step"><div class="is-num">3</div><div>اختر <strong>"إضافة إلى الشاشة الرئيسية"</strong></div></div>
+      <div class="install-step"><div class="is-num">4</div><div>اضغط <strong>"إضافة"</strong> ✅</div></div>
+    </div>
+    <button class="btn-save" onclick="closeInstallModal()">فهمت ✓</button>
+  </div>
+</div>
+
+<!-- SETTINGS MODAL -->
+<div class="modal" id="settings-modal" onclick="if(event.target===this)closeSettings()">
+  <div class="mbox">
+    <div class="mhd"><div class="mt">⚙️ إعدادات المحل</div><button class="btn-close" onclick="closeSettings()">✕</button></div>
+    <div class="frow"><label class="flbl">🏪 اسم المحل</label><input type="text" id="set-shop" class="finp" placeholder="Your Local Market"></div>
+    <div class="frow"><label class="flbl">📞 رقم هاتف المحل</label><input type="tel" id="set-phone" class="finp" placeholder="0555 000 000"></div>
+    <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">يظهر رقم الهاتف في تقارير الطباعة فقط</div>
+    <button class="btn-save" onclick="doSaveSettings()">حفظ الإعدادات ✓</button>
+  </div>
+</div>
+
+<!-- EDIT PHONE MODAL -->
+<div class="modal" id="edit-phone-modal" onclick="if(event.target===this)closeEditPhone()">
+  <div class="mbox">
+    <div class="mhd"><div class="mt">📞 تعديل رقم الهاتف</div><button class="btn-close" onclick="closeEditPhone()">✕</button></div>
+    <div class="frow"><label class="flbl">رقم هاتف الزبون</label><input type="tel" id="edit-phone-val" class="finp" placeholder="0555 000 000"></div>
+    <button class="btn-save" onclick="savePhone()">حفظ ✓</button>
+  </div>
+</div>
+
+<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});</script>
+</body>
+</html>

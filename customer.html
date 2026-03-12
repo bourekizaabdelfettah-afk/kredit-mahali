@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0f4d2e">
+<title>حسابي - دفتر الكريدي</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://inndhzupjwyaqafrnucb.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlubmRoenVwand5YXFhZnJudWNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxODcxODcsImV4cCI6MjA4ODc2MzE4N30.S2GI2HmbFVaYxfEXrSW32XX35QKMZiEj2jS6umJEvq4';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  function money(n) { return Math.abs(n).toLocaleString('fr-DZ'); }
+  function fdate(s) {
+    if (!s) return '';
+    return new Date(s).toLocaleDateString('ar-DZ', {day:'2-digit', month:'short', year:'numeric'});
+  }
+  function balance(c) {
+    return (c.transactions||[]).reduce((s,t) => t.type==='debt' ? s+t.amount : s-t.amount, 0);
+  }
+
+  async function loadCustomer() {
+    const params = new URLSearchParams(location.search);
+    const code = params.get('code');
+    if (!code) { showError('لم يتم تحديد كود الزبون'); return; }
+    
+    const {data, error} = await sb.from('customers').select('*').eq('code', code.toUpperCase()).single();
+    if (error || !data) { showError('الكود غير صحيح، تواصل مع صاحب المحل'); return; }
+    
+    showCustomer(data);
+    
+    // Realtime updates
+    sb.channel('cust-'+data.id)
+      .on('postgres_changes', {event:'UPDATE', schema:'public', table:'customers', filter:`id=eq.${data.id}`},
+        payload => showCustomer(payload.new))
+      .subscribe();
+  }
+
+  function showCustomer(c) {
+    const bal = balance(c);
+    document.getElementById('name').textContent = 'مرحباً ' + c.name + ' 👋';
+    document.getElementById('bal').textContent = money(bal);
+    document.getElementById('bal').style.color = bal > 0 ? '#ff8a8a' : '#7fffb4';
+    document.getElementById('lbl').textContent = bal>0 ? '💸 هذا هو مبلغ دينك' : bal<0 ? '✅ دفعت أكثر' : '✅ حسابك صافي';
+    document.getElementById('loading').style.display = 'none';
+    document.getElementById('content').style.display = 'block';
+    
+    const txns = [...(c.transactions||[])].reverse();
+    document.getElementById('history').innerHTML = txns.length===0
+      ? '<div class="no-h">لا توجد معاملات بعد</div>'
+      : txns.map(t => `
+        <div class="item">
+          <div class="dot ${t.type}"></div>
+          <div class="info">
+            <div class="desc">${t.desc}</div>
+            <div class="date">${fdate(t.date)}</div>
+          </div>
+          <div class="amt ${t.type}">${t.type==='debt'?'+':'-'} ${money(t.amount)} دج</div>
+        </div>`).join('');
+  }
+
+  function showError(msg) {
+    document.getElementById('loading').innerHTML = '<div class="err-msg">❌ ' + msg + '</div>';
+  }
+
+  window.addEventListener('DOMContentLoaded', loadCustomer);
+</script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { font-family:'Cairo',sans-serif; background:linear-gradient(160deg,#071f12,#0f4d2e 40%,#1a7a4a 80%); min-height:100vh; }
+.topbar { background:rgba(0,0,0,0.25); backdrop-filter:blur(10px); padding:14px 18px; border-bottom:1px solid rgba(255,255,255,0.1); text-align:center; }
+.topbar h1 { color:#fff; font-size:18px; font-weight:900; }
+.topbar p { color:rgba(255,255,255,0.5); font-size:11px; }
+.wrap { padding:18px; max-width:520px; margin:0 auto; }
+#loading { text-align:center; padding:60px 20px; color:rgba(255,255,255,0.7); font-size:16px; }
+.spin { width:40px; height:40px; border:3px solid rgba(255,255,255,0.2); border-top-color:#fff; border-radius:50%; animation:spin 0.7s linear infinite; margin:0 auto 16px; }
+@keyframes spin { to { transform:rotate(360deg); } }
+#content { display:none; }
+.hero { background:rgba(255,255,255,0.1); backdrop-filter:blur(15px); border:1px solid rgba(255,255,255,0.2); border-radius:22px; padding:30px; text-align:center; margin-bottom:20px; }
+#name { color:rgba(255,255,255,0.8); font-size:16px; margin-bottom:8px; }
+#bal { font-size:52px; font-weight:900; direction:ltr; line-height:1; color:white; }
+.cur { color:rgba(255,255,255,0.6); font-size:14px; margin-top:6px; }
+#lbl { color:rgba(255,255,255,0.55); font-size:13px; margin-top:5px; }
+.badge { display:inline-flex; align-items:center; gap:5px; background:rgba(255,255,255,0.12); border:1px solid rgba(255,255,255,0.2); color:rgba(255,255,255,0.75); padding:6px 16px; border-radius:20px; font-size:12px; margin-top:14px; }
+.hist { background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.12); border-radius:16px; overflow:hidden; }
+.hist-hd { padding:13px 17px; border-bottom:1px solid rgba(255,255,255,0.1); color:#fff; font-size:15px; font-weight:700; }
+.item { padding:12px 17px; display:flex; align-items:center; border-bottom:1px solid rgba(255,255,255,0.06); }
+.item:last-child { border-bottom:none; }
+.dot { width:8px; height:8px; border-radius:50%; margin-left:11px; flex-shrink:0; }
+.dot.debt { background:#ff8a8a; }
+.dot.payment { background:#7fffb4; }
+.info { flex:1; }
+.desc { color:#fff; font-size:14px; font-weight:600; }
+.date { color:rgba(255,255,255,0.45); font-size:11px; }
+.amt { font-size:15px; font-weight:900; direction:ltr; }
+.amt.debt { color:#ff8a8a; }
+.amt.payment { color:#7fffb4; }
+.no-h { color:rgba(255,255,255,0.45); text-align:center; padding:28px; }
+.err-msg { color:#ff8a8a; font-size:15px; }
+</style>
+</head>
+<body>
+<div class="topbar"><h1>🏪 دفتر الكريدي</h1><p>🔒 عرض فقط — لا يمكن التعديل</p></div>
+<div class="wrap">
+  <div id="loading"><div class="spin"></div>جاري تحميل حسابك...</div>
+  <div id="content">
+    <div class="hero">
+      <div id="name"></div>
+      <div id="bal">0</div>
+      <div class="cur">دينار جزائري</div>
+      <div id="lbl"></div>
+      <div class="badge">🔒 للعرض فقط</div>
+    </div>
+    <div class="hist">
+      <div class="hist-hd">📜 سجل المعاملات</div>
+      <div id="history"></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

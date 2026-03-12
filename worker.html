@@ -1,0 +1,461 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<meta name="theme-color" content="#0d1a0f">
+<title>واجهة العامل — Your Local Market</title>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;600;700;900&display=swap" rel="stylesheet">
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script>
+  const SUPABASE_URL = 'https://inndhzupjwyaqafrnucb.supabase.co';
+  const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImlubmRoenVwand5YXFhZnJudWNiIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzMxODcxODcsImV4cCI6MjA4ODc2MzE4N30.S2GI2HmbFVaYxfEXrSW32XX35QKMZiEj2jS6umJEvq4';
+  const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
+
+  const WORKER_PASSWORD = 'worker123'; // ← غيّر كلمة سر العامل
+
+  function money(n) { return Math.abs(n).toLocaleString('fr-DZ'); }
+  function fdate(s) {
+    if (!s) return '';
+    return new Date(s).toLocaleDateString('ar-DZ', { day: '2-digit', month: 'short', year: 'numeric' });
+  }
+  function bal(c) {
+    return (c.transactions || []).reduce((s, t) => t.type === 'debt' ? s + t.amount : s - t.amount, 0);
+  }
+  function genCode() {
+    const letters = 'ABCDEFGHJKLMNPQRSTUVWXYZ';
+    const nums = '0123456789';
+    let l = '', n = '';
+    for (let i = 0; i < 2; i++) l += letters[Math.floor(Math.random() * letters.length)];
+    for (let i = 0; i < 4; i++) n += nums[Math.floor(Math.random() * nums.length)];
+    return 'ZB-' + l + n;
+  }
+
+  let allCustomers = [];
+  let selectedCustomer = null;
+
+  // ===== LOGIN =====
+  window.workerLogin = function () {
+    const pw = document.getElementById('pw-inp').value;
+    if (pw === WORKER_PASSWORD) {
+      sessionStorage.setItem('worker_auth', '1');
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('worker-screen').style.display = 'block';
+      loadAll();
+    } else {
+      document.getElementById('pw-err').style.display = 'block';
+    }
+  };
+  window.workerLogout = function () {
+    sessionStorage.removeItem('worker_auth');
+    location.reload();
+  };
+
+  // ===== LOAD =====
+  async function loadAll() {
+    showLoader(true);
+    const { data, error } = await sb.from('customers').select('*').order('name');
+    showLoader(false);
+    if (error) { showToast('❌ خطأ في تحميل البيانات', 'err'); return; }
+    allCustomers = data || [];
+    document.getElementById('stat-total').textContent = allCustomers.length;
+    document.getElementById('stat-debt-count').textContent = allCustomers.filter(c => bal(c) > 0).length;
+    renderList(allCustomers);
+  }
+
+  window.searchCustomers = function () {
+    const q = document.getElementById('search-inp').value.trim().toLowerCase();
+    if (!q) { renderList(allCustomers); return; }
+    renderList(allCustomers.filter(c =>
+      c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q)
+    ));
+  };
+
+  function renderList(list) {
+    const el = document.getElementById('cust-list');
+    if (!list.length) { el.innerHTML = '<div class="empty">لا يوجد نتائج</div>'; return; }
+    el.innerHTML = list.map(c => {
+      const b = bal(c);
+      const isReg = c.customer_type === 'regular';
+      return `
+        <div class="cust-card" onclick="openCustomer('${c.id}')">
+          <div class="cc-avatar ${isReg ? 'reg' : 'occ'}">${c.name.charAt(0)}</div>
+          <div class="cc-info">
+            <div class="cc-name">${c.name}
+              <span class="type-badge ${isReg ? 'regular' : 'occasional'}">${isReg ? '⭐ دائم' : '👤 عارض'}</span>
+            </div>
+            <div class="cc-code">${c.code}</div>
+          </div>
+          <div class="cc-bal ${b > 0 ? 'debt' : b < 0 ? 'credit' : 'zero'}">
+            <div class="cc-amt">${money(b)}</div>
+            <div class="cc-tag">${b > 0 ? 'دين' : b < 0 ? 'رصيد' : 'صافي'}</div>
+          </div>
+        </div>`;
+    }).join('');
+  }
+
+  // ===== ADD CUSTOMER =====
+  window.showAddModal = function () {
+    document.getElementById('add-modal').style.display = 'flex';
+    document.getElementById('new-code').value = genCode();
+    document.getElementById('new-name').value = '';
+    document.getElementById('new-phone').value = '';
+    document.getElementById('new-type').value = 'occasional';
+  };
+  window.closeAddModal = function () { document.getElementById('add-modal').style.display = 'none'; };
+  window.refreshCode = function () { document.getElementById('new-code').value = genCode(); };
+  window.saveNewCustomer = async function () {
+    const name = document.getElementById('new-name').value.trim();
+    const code = document.getElementById('new-code').value.trim().toUpperCase();
+    const phone = document.getElementById('new-phone').value.trim();
+    const customer_type = document.getElementById('new-type').value;
+    if (!name || !code) { showToast('❌ أدخل الاسم والكود', 'err'); return; }
+    showLoader(true);
+    const { error } = await sb.from('customers').insert({ name, code, phone, customer_type, transactions: [] });
+    showLoader(false);
+    if (error) { showToast(error.code === '23505' ? '❌ الكود مستخدم، جرب آخر' : '❌ خطأ: ' + error.message, 'err'); return; }
+    closeAddModal();
+    showToast('✅ تم إضافة الزبون');
+    await loadAll();
+  };
+
+  // ===== CUSTOMER DETAIL =====
+  window.openCustomer = function (id) {
+    selectedCustomer = allCustomers.find(c => c.id === id);
+    if (!selectedCustomer) return;
+    renderCustomerModal(selectedCustomer);
+    document.getElementById('cust-modal').style.display = 'flex';
+  };
+  window.closeCustomerModal = function () {
+    document.getElementById('cust-modal').style.display = 'none';
+    selectedCustomer = null;
+  };
+
+  function renderCustomerModal(c) {
+    const b = bal(c);
+    const isReg = c.customer_type === 'regular';
+    document.getElementById('cm-avatar').textContent = c.name.charAt(0);
+    document.getElementById('cm-name').textContent = c.name;
+    document.getElementById('cm-code').textContent = c.code;
+    document.getElementById('cm-type-lbl').textContent = isReg ? '⭐ زبون دائم' : '👤 زبون عارض';
+    document.getElementById('cm-type-lbl').className = 'cm-type-lbl ' + (isReg ? 'regular' : 'occasional');
+    document.getElementById('cm-bal').textContent = money(b);
+    document.getElementById('cm-bal').style.color = b > 0 ? '#ff6b6b' : '#51cf66';
+    document.getElementById('cm-lbl').textContent = b > 0 ? '💸 دين' : b < 0 ? '✅ رصيد لصالحه' : '✅ صافي';
+
+    const txns = [...(c.transactions || [])].reverse();
+    document.getElementById('cm-history').innerHTML = !txns.length
+      ? '<div class="no-txn">لا توجد معاملات بعد</div>'
+      : txns.map(t => `
+        <div class="txn-item">
+          <div class="txn-dot ${t.type}"></div>
+          <div class="txn-info">
+            <div class="txn-desc">${t.desc}</div>
+            <div class="txn-date">${fdate(t.date)}</div>
+          </div>
+          <div class="txn-amt ${t.type}">${t.type === 'debt' ? '+' : '-'} ${money(t.amount)} دج</div>
+        </div>`).join('');
+
+    document.getElementById('txn-desc').value = '';
+    document.getElementById('txn-amount').value = '';
+    document.getElementById('txn-type').value = 'debt';
+  }
+
+  window.addTransaction = async function () {
+    if (!selectedCustomer) return;
+    const desc = document.getElementById('txn-desc').value.trim();
+    const amount = parseFloat(document.getElementById('txn-amount').value);
+    const type = document.getElementById('txn-type').value;
+    if (!desc || !amount || amount <= 0) { showToast('❌ أدخل الوصف والمبلغ', 'err'); return; }
+    const updatedTxns = [...(selectedCustomer.transactions || []), { type, amount, desc, date: new Date().toISOString() }];
+    showLoader(true);
+    const { data, error } = await sb.from('customers').update({ transactions: updatedTxns }).eq('id', selectedCustomer.id).select().single();
+    showLoader(false);
+    if (error) { showToast('❌ خطأ في الحفظ', 'err'); return; }
+    selectedCustomer = data;
+    const idx = allCustomers.findIndex(c => c.id === data.id);
+    if (idx !== -1) allCustomers[idx] = data;
+    renderCustomerModal(data);
+    renderList(allCustomers.filter(c => {
+      const q = document.getElementById('search-inp').value.trim().toLowerCase();
+      return !q || c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q);
+    }));
+    document.getElementById('stat-debt-count').textContent = allCustomers.filter(c => bal(c) > 0).length;
+    showToast(type === 'debt' ? '✅ تم تسجيل الدين' : '✅ تم تسجيل الدفعة');
+  };
+
+  window.copyCustomerCode = function () {
+    if (!selectedCustomer) return;
+    const text = `كودك في Your Local Market:\n${selectedCustomer.code}\n\nتابع حسابك:\n${location.origin}/index.html`;
+    navigator.clipboard.writeText(text).then(() => showToast('📋 تم نسخ الكود'));
+  };
+
+  function showLoader(s) { document.getElementById('loader').style.display = s ? 'flex' : 'none'; }
+  function showToast(msg, type = 'ok') {
+    const t = document.getElementById('toast');
+    t.textContent = msg; t.className = 'toast show ' + type;
+    setTimeout(() => t.className = 'toast', 2800);
+  }
+
+  window.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('pw-inp').addEventListener('keydown', e => { if (e.key === 'Enter') workerLogin(); });
+    if (sessionStorage.getItem('worker_auth') === '1') {
+      document.getElementById('login-screen').style.display = 'none';
+      document.getElementById('worker-screen').style.display = 'block';
+      loadAll();
+    }
+  });
+</script>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+body { font-family:'Cairo',sans-serif; min-height:100vh; background:#060f08; color:white; }
+
+#loader { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); backdrop-filter:blur(6px); z-index:9999; align-items:center; justify-content:center; }
+.spin { width:44px; height:44px; border:4px solid rgba(255,255,255,0.1); border-top-color:#22a865; border-radius:50%; animation:spin 0.7s linear infinite; }
+@keyframes spin { to { transform:rotate(360deg); } }
+
+.toast { position:fixed; bottom:24px; left:50%; transform:translateX(-50%) translateY(100px); background:#0a2e12; border:1px solid rgba(255,255,255,0.15); color:white; padding:12px 22px; border-radius:12px; font-size:14px; font-weight:700; z-index:9998; transition:transform 0.3s; white-space:nowrap; }
+.toast.show { transform:translateX(-50%) translateY(0); }
+.toast.err { background:#3a1e1e; border-color:rgba(255,107,107,0.3); }
+
+/* LOGIN */
+#login-screen { min-height:100vh; display:flex; align-items:center; justify-content:center; background:linear-gradient(160deg,#020a04,#071a09,#0a2e12,#0f4d2e); padding:24px; }
+.login-box { background:rgba(255,255,255,0.06); backdrop-filter:blur(20px); border:1px solid rgba(255,255,255,0.12); border-radius:28px; padding:40px 30px; width:100%; max-width:360px; text-align:center; }
+.login-ico { font-size:52px; margin-bottom:14px; }
+.login-t { font-size:22px; font-weight:900; margin-bottom:4px; }
+.login-s { color:rgba(255,255,255,0.4); font-size:12px; margin-bottom:6px; }
+.login-role { display:inline-block; background:rgba(34,168,101,0.2); border:1px solid rgba(34,168,101,0.4); color:#7ed97e; padding:5px 16px; border-radius:20px; font-size:12px; font-weight:700; margin-bottom:24px; }
+.pw-inp { width:100%; padding:15px 18px; background:rgba(255,255,255,0.07); border:1.5px solid rgba(255,255,255,0.12); border-radius:13px; color:white; font-family:'Cairo',sans-serif; font-size:16px; outline:none; text-align:center; letter-spacing:3px; margin-bottom:10px; }
+.pw-inp:focus { border-color:#22a865; }
+#pw-err { color:#ff6b6b; font-size:12px; margin-bottom:10px; display:none; }
+.btn-login { width:100%; padding:14px; background:linear-gradient(135deg,#1a7a4a,#22a865); color:white; border:none; border-radius:13px; font-family:'Cairo',sans-serif; font-size:16px; font-weight:800; cursor:pointer; box-shadow:0 8px 25px rgba(26,122,74,0.4); }
+
+/* WORKER SCREEN */
+#worker-screen { display:none; }
+.topbar { background:rgba(0,0,0,0.35); backdrop-filter:blur(15px); border-bottom:1px solid rgba(255,255,255,0.07); padding:13px 18px; display:flex; align-items:center; justify-content:space-between; position:sticky; top:0; z-index:50; }
+.tb-logo { display:flex; align-items:center; gap:10px; }
+.tb-ico { width:38px; height:38px; background:linear-gradient(135deg,#0f4d2e,#1a7a4a); border-radius:11px; display:flex; align-items:center; justify-content:center; font-size:19px; }
+.tb-title { font-size:15px; font-weight:900; }
+.tb-sub { font-size:10px; color:rgba(255,255,255,0.35); }
+.tb-role { display:flex; align-items:center; gap:8px; }
+.role-badge { background:rgba(34,168,101,0.15); border:1px solid rgba(34,168,101,0.3); color:#7ed97e; padding:4px 10px; border-radius:8px; font-size:11px; font-weight:700; }
+.btn-out { background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.1); color:rgba(255,255,255,0.6); padding:7px 12px; border-radius:9px; font-family:'Cairo',sans-serif; font-size:11px; cursor:pointer; }
+
+.body { padding:16px; max-width:600px; margin:0 auto; }
+
+/* STATS */
+.stats { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:16px; }
+.stat-card { background:rgba(255,255,255,0.05); border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:14px; text-align:center; }
+.stat-val { font-size:28px; font-weight:900; color:#22a865; }
+.stat-lbl { font-size:11px; color:rgba(255,255,255,0.4); margin-top:3px; }
+
+/* ACTIONS */
+.actions-bar { display:flex; gap:10px; margin-bottom:12px; }
+.search-wrap { flex:1; position:relative; }
+.search-inp { width:100%; padding:11px 16px 11px 36px; background:rgba(255,255,255,0.06); border:1.5px solid rgba(255,255,255,0.1); border-radius:12px; color:white; font-family:'Cairo',sans-serif; font-size:14px; outline:none; }
+.search-inp:focus { border-color:#22a865; }
+.search-ico { position:absolute; left:12px; top:50%; transform:translateY(-50%); color:rgba(255,255,255,0.3); }
+.btn-add { background:linear-gradient(135deg,#1a7a4a,#22a865); color:white; border:none; padding:11px 16px; border-radius:12px; font-family:'Cairo',sans-serif; font-size:13px; font-weight:800; cursor:pointer; white-space:nowrap; box-shadow:0 4px 15px rgba(26,122,74,0.3); }
+
+/* CUSTOMER CARDS */
+.cust-card { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:12px 14px; display:flex; align-items:center; gap:11px; margin-bottom:8px; cursor:pointer; transition:all 0.15s; }
+.cust-card:active { transform:scale(0.99); background:rgba(255,255,255,0.07); }
+.cc-avatar { width:42px; height:42px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:18px; font-weight:900; flex-shrink:0; }
+.cc-avatar.reg { background:linear-gradient(135deg,#5a4fcf,#7c6ff7); }
+.cc-avatar.occ { background:linear-gradient(135deg,#1a7a4a,#22a865); }
+.cc-info { flex:1; min-width:0; }
+.cc-name { font-size:13px; font-weight:800; display:flex; align-items:center; gap:5px; flex-wrap:wrap; }
+.cc-code { font-size:11px; color:rgba(255,255,255,0.35); margin-top:2px; font-family:monospace; }
+.type-badge { font-size:10px; padding:2px 7px; border-radius:5px; font-weight:700; }
+.type-badge.regular { background:rgba(124,111,247,0.2); color:#a89ff7; }
+.type-badge.occasional { background:rgba(34,168,101,0.2); color:#7ed97e; }
+.cc-bal { text-align:left; flex-shrink:0; }
+.cc-amt { font-size:14px; font-weight:900; direction:ltr; }
+.cc-tag { font-size:10px; margin-top:2px; text-align:center; }
+.cc-bal.debt .cc-amt,.cc-bal.debt .cc-tag { color:#ff6b6b; }
+.cc-bal.credit .cc-amt,.cc-bal.credit .cc-tag { color:#51cf66; }
+.cc-bal.zero .cc-amt,.cc-bal.zero .cc-tag { color:rgba(255,255,255,0.4); }
+.empty { color:rgba(255,255,255,0.3); text-align:center; padding:40px; }
+
+/* MODALS */
+.modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.75); backdrop-filter:blur(8px); z-index:200; align-items:flex-end; justify-content:center; }
+.modal-box { background:#0a1f0e; border:1px solid rgba(255,255,255,0.1); border-radius:28px 28px 0 0; padding:24px 20px 34px; width:100%; max-width:540px; max-height:92vh; overflow-y:auto; }
+.modal-hd { display:flex; align-items:center; justify-content:space-between; margin-bottom:20px; }
+.modal-t { font-size:17px; font-weight:900; }
+.btn-close { background:rgba(255,255,255,0.08); border:1px solid rgba(255,255,255,0.1); color:rgba(255,255,255,0.5); width:32px; height:32px; border-radius:8px; cursor:pointer; font-size:16px; }
+.form-row { margin-bottom:13px; }
+.form-lbl { font-size:12px; color:rgba(255,255,255,0.5); margin-bottom:6px; display:block; font-weight:700; }
+.form-inp { width:100%; padding:13px 15px; background:rgba(255,255,255,0.06); border:1.5px solid rgba(255,255,255,0.1); border-radius:12px; color:white; font-family:'Cairo',sans-serif; font-size:15px; outline:none; transition:all 0.2s; }
+.form-inp:focus { border-color:#22a865; }
+.form-inp option { background:#0a1f0e; }
+.code-wrap { display:flex; gap:8px; }
+.code-wrap .form-inp { flex:1; text-align:center; letter-spacing:3px; font-weight:900; font-size:17px; }
+.btn-refresh { background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.1); color:white; padding:13px 15px; border-radius:12px; cursor:pointer; font-size:18px; flex-shrink:0; }
+.btn-save { width:100%; padding:14px; background:linear-gradient(135deg,#1a7a4a,#22a865); color:white; border:none; border-radius:13px; font-family:'Cairo',sans-serif; font-size:15px; font-weight:800; cursor:pointer; margin-top:6px; box-shadow:0 6px 20px rgba(26,122,74,0.35); }
+
+/* CUSTOMER MODAL */
+.cm-top { text-align:center; margin-bottom:16px; }
+.cm-avatar { width:64px; height:64px; background:linear-gradient(135deg,#0f4d2e,#22a865); border-radius:18px; display:flex; align-items:center; justify-content:center; font-size:28px; font-weight:900; margin:0 auto 10px; }
+.cm-name { font-size:19px; font-weight:900; }
+.cm-code-badge { display:inline-block; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.1); padding:4px 13px; border-radius:20px; font-size:12px; font-family:monospace; letter-spacing:2px; margin-top:5px; color:rgba(255,255,255,0.5); }
+.cm-type-lbl { display:inline-block; padding:4px 12px; border-radius:20px; font-size:12px; font-weight:700; margin-top:6px; }
+.cm-type-lbl.regular { background:rgba(124,111,247,0.2); color:#a89ff7; }
+.cm-type-lbl.occasional { background:rgba(34,168,101,0.2); color:#7ed97e; }
+.cm-bal-box { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:16px; padding:16px; text-align:center; margin-bottom:14px; }
+.cm-bal-num { font-size:38px; font-weight:900; direction:ltr; }
+.cm-bal-cur { color:rgba(255,255,255,0.4); font-size:12px; margin-top:3px; }
+#cm-lbl { font-size:13px; margin-top:4px; }
+.section-t { font-size:12px; font-weight:800; color:rgba(255,255,255,0.4); margin-bottom:9px; margin-top:16px; letter-spacing:0.5px; }
+.txn-form { background:rgba(255,255,255,0.04); border:1px solid rgba(255,255,255,0.08); border-radius:14px; padding:13px; margin-bottom:13px; }
+.txn-row { display:flex; gap:8px; margin-bottom:8px; }
+.txn-row .form-inp { flex:1; padding:11px 12px; font-size:14px; }
+.btn-add-txn { width:100%; padding:12px; background:linear-gradient(135deg,#1a7a4a,#22a865); color:white; border:none; border-radius:11px; font-family:'Cairo',sans-serif; font-size:14px; font-weight:800; cursor:pointer; }
+.txn-history { background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.07); border-radius:13px; overflow:hidden; margin-bottom:13px; }
+.txn-item { padding:10px 13px; display:flex; align-items:center; border-bottom:1px solid rgba(255,255,255,0.05); }
+.txn-item:last-child { border-bottom:none; }
+.txn-dot { width:8px; height:8px; border-radius:50%; margin-left:9px; flex-shrink:0; }
+.txn-dot.debt { background:#ff6b6b; }
+.txn-dot.payment { background:#51cf66; }
+.txn-info { flex:1; }
+.txn-desc { font-size:12px; font-weight:600; }
+.txn-date { font-size:10px; color:rgba(255,255,255,0.35); }
+.txn-amt { font-size:13px; font-weight:900; direction:ltr; }
+.txn-amt.debt { color:#ff6b6b; }
+.txn-amt.payment { color:#51cf66; }
+.no-txn { color:rgba(255,255,255,0.3); text-align:center; padding:18px; font-size:12px; }
+.btn-copy-code { width:100%; padding:12px; background:rgba(255,255,255,0.07); border:1px solid rgba(255,255,255,0.12); color:white; border-radius:11px; font-family:'Cairo',sans-serif; font-size:13px; font-weight:700; cursor:pointer; }
+
+/* NO DELETE WARNING */
+.no-delete-notice { background:rgba(255,107,107,0.06); border:1px solid rgba(255,107,107,0.15); border-radius:10px; padding:9px 13px; font-size:11px; color:rgba(255,150,150,0.6); text-align:center; margin-top:10px; }
+</style>
+</head>
+<body>
+
+<div id="loader"><div class="spin"></div></div>
+<div class="toast" id="toast"></div>
+
+<!-- LOGIN -->
+<div id="login-screen">
+  <div class="login-box">
+    <div class="login-ico">👷</div>
+    <div class="login-t">Your Local Market</div>
+    <div class="login-s">واجهة العامل</div>
+    <div class="login-role">🔒 صلاحيات محدودة</div>
+    <input type="password" id="pw-inp" class="pw-inp" placeholder="كلمة السر">
+    <div id="pw-err">❌ كلمة السر غير صحيحة</div>
+    <button class="btn-login" onclick="workerLogin()">دخول ←</button>
+  </div>
+</div>
+
+<!-- WORKER SCREEN -->
+<div id="worker-screen">
+  <div class="topbar">
+    <div class="tb-logo">
+      <div class="tb-ico">🏪</div>
+      <div>
+        <div class="tb-title">Your Local Market</div>
+        <div class="tb-sub">واجهة العامل</div>
+      </div>
+    </div>
+    <div class="tb-role">
+      <span class="role-badge">👷 عامل</span>
+      <button class="btn-out" onclick="workerLogout()">خروج ↩</button>
+    </div>
+  </div>
+
+  <div class="body">
+    <div class="stats">
+      <div class="stat-card">
+        <div class="stat-val" id="stat-total">0</div>
+        <div class="stat-lbl">إجمالي الزبائن</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-val" style="color:#ff6b6b;" id="stat-debt-count">0</div>
+        <div class="stat-lbl">زبائن بدين</div>
+      </div>
+    </div>
+
+    <div class="actions-bar">
+      <div class="search-wrap">
+        <span class="search-ico">🔍</span>
+        <input type="text" id="search-inp" class="search-inp" placeholder="ابحث بالاسم أو الكود..." oninput="searchCustomers()">
+      </div>
+      <button class="btn-add" onclick="showAddModal()">+ زبون</button>
+    </div>
+
+    <div id="cust-list"><div class="empty">جاري التحميل...</div></div>
+  </div>
+</div>
+
+<!-- ADD CUSTOMER MODAL -->
+<div class="modal" id="add-modal" onclick="if(event.target===this) closeAddModal()">
+  <div class="modal-box">
+    <div class="modal-hd">
+      <div class="modal-t">➕ زبون جديد</div>
+      <button class="btn-close" onclick="closeAddModal()">✕</button>
+    </div>
+    <div class="form-row">
+      <label class="form-lbl">👤 اسم الزبون</label>
+      <input type="text" id="new-name" class="form-inp" placeholder="مثال: أحمد بن علي">
+    </div>
+    <div class="form-row">
+      <label class="form-lbl">🔑 كود الزبون</label>
+      <div class="code-wrap">
+        <input type="text" id="new-code" class="form-inp" oninput="this.value=this.value.toUpperCase()">
+        <button class="btn-refresh" onclick="refreshCode()">🔄</button>
+      </div>
+    </div>
+    <div class="form-row">
+      <label class="form-lbl">📞 رقم الهاتف (اختياري)</label>
+      <input type="tel" id="new-phone" class="form-inp" placeholder="0555 000 000">
+    </div>
+    <div class="form-row">
+      <label class="form-lbl">🏷️ نوع الزبون</label>
+      <select id="new-type" class="form-inp">
+        <option value="occasional">👤 عارض — يسدد خلال 7 أيام</option>
+        <option value="regular">⭐ دائم — يسدد خلال 30 يوم</option>
+      </select>
+    </div>
+    <button class="btn-save" onclick="saveNewCustomer()">حفظ الزبون ✓</button>
+  </div>
+</div>
+
+<!-- CUSTOMER DETAIL MODAL -->
+<div class="modal" id="cust-modal" onclick="if(event.target===this) closeCustomerModal()">
+  <div class="modal-box">
+    <div class="modal-hd">
+      <div class="modal-t">تفاصيل الزبون</div>
+      <button class="btn-close" onclick="closeCustomerModal()">✕</button>
+    </div>
+    <div class="cm-top">
+      <div class="cm-avatar" id="cm-avatar">-</div>
+      <div class="cm-name" id="cm-name">-</div>
+      <div class="cm-code-badge" id="cm-code">-</div>
+      <div id="cm-type-lbl" class="cm-type-lbl">-</div>
+    </div>
+    <div class="cm-bal-box">
+      <div class="cm-bal-num" id="cm-bal">0</div>
+      <div class="cm-bal-cur">دينار جزائري (دج)</div>
+      <div id="cm-lbl"></div>
+    </div>
+    <div class="section-t">➕ إضافة معاملة</div>
+    <div class="txn-form">
+      <div class="txn-row">
+        <select id="txn-type" class="form-inp">
+          <option value="debt">💸 دين</option>
+          <option value="payment">✅ دفعة</option>
+        </select>
+        <input type="number" id="txn-amount" class="form-inp" placeholder="المبلغ (دج)" min="1">
+      </div>
+      <input type="text" id="txn-desc" class="form-inp" placeholder="الوصف..." style="margin-bottom:9px;">
+      <button class="btn-add-txn" onclick="addTransaction()">تسجيل ✓</button>
+    </div>
+    <div class="section-t">📜 سجل المعاملات</div>
+    <div class="txn-history" id="cm-history"></div>
+    <button class="btn-copy-code" onclick="copyCustomerCode()">📋 نسخ كود الزبون</button>
+    <div class="no-delete-notice">🔒 الحذف غير متاح — تواصل مع صاحب المحل</div>
+  </div>
+</div>
+
+</body>
+</html>
