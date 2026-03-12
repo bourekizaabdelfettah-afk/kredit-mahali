@@ -190,6 +190,9 @@ window.addEventListener('DOMContentLoaded',async()=>{
   $('code-inp').addEventListener('keydown',e=>{if(e.key==='Enter')checkCustomerCode();});
   window.addEventListener('beforeinstallprompt',e=>{
     e.preventDefault();window._pwa=e;
+    // أظهر الزر الثابت في شاشة الدخول
+    const btn=$('install-entry-btn');
+    if(btn){ btn.style.display='flex'; btn.classList.add('pwa-ready'); }
     $('install-bar').style.display='flex';
   });
   const role=sessionStorage.getItem('ylm_role');
@@ -204,6 +207,22 @@ window.installApp=async()=>{
   if(!window._pwa)return;
   window._pwa.prompt();await window._pwa.userChoice;
   window._pwa=null;$('install-bar').style.display='none';
+};
+
+window.doInstallEntry=async()=>{
+  if(window._pwa){
+    window._pwa.prompt();
+    const result=await window._pwa.userChoice;
+    if(result.outcome==='accepted'){
+      const btn=$('install-entry-btn');
+      btn.textContent='✅ تم التثبيت!';
+      btn.style.background='#16a34a';
+      setTimeout(()=>btn.style.display='none',2500);
+      window._pwa=null;
+    }
+  } else {
+    openInstallModal();
+  }
 };
 
 // ── ENTRY ──
@@ -1124,6 +1143,12 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 .btn-settings{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:white;padding:7px 11px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:11px;cursor:pointer;font-weight:700;}
 .no-del{background:var(--bg);border:1.5px solid var(--border);border-radius:10px;padding:9px 13px;font-size:11px;color:var(--text3);text-align:center;margin-top:10px;font-weight:600;}
 
+/* INSTALL ENTRY BUTTON */
+.btn-install-entry{width:100%;margin-top:14px;padding:13px;background:linear-gradient(135deg,#0f4c81,#1a6fc4);color:white;border:none;border-radius:13px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 16px rgba(15,76,129,.25);transition:all .2s;}
+.btn-install-entry:active{transform:scale(.97);}
+.btn-install-entry.pwa-ready{animation:pulse-install 2s infinite;}
+@keyframes pulse-install{0%,100%{box-shadow:0 4px 16px rgba(15,76,129,.25);}50%{box-shadow:0 4px 24px rgba(15,76,129,.5);}}
+
 /* ══ WORKER SIMPLE UI ══ */
 .w-body{padding:16px;max-width:540px;margin:0 auto;}
 .w-search-wrap{position:relative;margin-bottom:12px;}
@@ -1215,6 +1240,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <button class="btn-main" onclick="checkCustomerCode()">عرض حسابي ←</button>
       <div class="hint">لا تعرف كودك؟ تواصل مع المحل<br>🔒 كودك خاص بك فقط</div>
       <div class="switch-lnk" onclick="switchToPassword()">أنت صاحب المحل أو العامل؟ <span>اضغط هنا</span></div>
+      <button class="btn-install-entry" id="install-entry-btn" onclick="doInstallEntry()">📲 ثبّت التطبيق على هاتفك</button>
     </div>
     <div class="panel" id="login-panel" style="display:none;">
       <div class="panel-t">دخول الموظفين 🔐</div>
@@ -1247,7 +1273,6 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <div class="bc">دينار جزائري (دج)</div>
       <div id="c-lbl"></div>
       <div class="ro">🔒 عرض فقط</div>
-      <div class="ro install-hint" onclick="openInstallModal()" style="cursor:pointer;background:rgba(255,255,255,.25);margin-top:8px;">📲 كيف أثبّت التطبيق؟</div>
     </div>
     <div class="hist-box">
       <div class="hh"><div class="hh-t">📜 سجل المعاملات</div></div>
