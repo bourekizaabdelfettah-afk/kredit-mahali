@@ -245,6 +245,7 @@ window.checkCustomerCode=async()=>{
   showLoader(true);
   const {data,error}=await sb.from('customers').select('*').eq('code',code).single();
   showLoader(false);
+  if(error&&isSupabaseSleep(error)){showSleepError('customer');return;}
   if(error||!data){err.textContent='❌ الكود غير صحيح، تواصل مع المحل';err.style.display='block';return;}
   localStorage.setItem('ylm_code',code);
   renderCustomerView(data);startRT(data.id);
@@ -281,6 +282,40 @@ function startRT(id){
 }
 window.logoutCustomer=()=>{localStorage.removeItem('ylm_code');showScreen('entry-screen');$('code-inp').value='';};
 
+// ── SUPABASE ERROR HANDLER ──
+function isSupabaseSleep(error){
+  return error&&(error.message?.includes('Failed to fetch')||error.message?.includes('NetworkError')||error.code==='PGRST301'||error.message?.includes('fetch'));
+}
+function showSleepError(role){
+  const link='https://supabase.com/dashboard/project/inndhzupjwyaqafrnucb';
+  const msg=role==='customer'
+    ?`<div class="sleep-box">
+        <div class="sleep-ico">😴</div>
+        <div class="sleep-title">قاعدة البيانات نائمة!</div>
+        <div class="sleep-sub">تواصل مع صاحب المحل لإعادة تشغيلها</div>
+      </div>`
+    :`<div class="sleep-box">
+        <div class="sleep-ico">😴</div>
+        <div class="sleep-title">قاعدة البيانات نائمة!</div>
+        <div class="sleep-sub">لم يُستخدم التطبيق أكثر من 7 أيام</div>
+        <a href="${link}" target="_blank" class="sleep-btn">🔗 اضغط هنا لإعادة التشغيل</a>
+        <div class="sleep-hint">افتح الرابط ← اضغط "Restore" أو "Resume"</div>
+      </div>`;
+  // أظهر في المنطقة المناسبة
+  if(role==='admin'){
+    $('a-cust-list').innerHTML=msg;
+    $('a-stat-total').textContent='—';
+    $('a-stat-late').textContent='—';
+    $('a-stat-debt').textContent='—';
+  } else if(role==='worker'){
+    $('w-list').innerHTML=msg;
+  } else {
+    const err=$('code-err');
+    err.innerHTML='😴 قاعدة البيانات نائمة — تواصل مع صاحب المحل';
+    err.style.display='block';
+  }
+}
+
 // ── ADMIN ──
 window.logoutAdmin=()=>{sessionStorage.removeItem('ylm_role');showScreen('entry-screen');};
 
@@ -288,7 +323,11 @@ async function loadAll(){
   showLoader(true);
   const {data,error}=await sb.from('customers').select('*').order('name');
   showLoader(false);
-  if(error){showToast('❌ خطأ في تحميل البيانات','err');return;}
+  if(error){
+    if(isSupabaseSleep(error))showSleepError('admin');
+    else showToast('❌ خطأ في تحميل البيانات','err');
+    return;
+  }
   allCustomers=data||[];
   renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
   checkBackupReminder();
@@ -338,7 +377,11 @@ async function loadAllWorker(){
   showLoader(true);
   const {data,error}=await sb.from('customers').select('*').order('name');
   showLoader(false);
-  if(error){showToast('❌ خطأ في التحميل','err');return;}
+  if(error){
+    if(isSupabaseSleep(error))showSleepError('worker');
+    else showToast('❌ خطأ في التحميل','err');
+    return;
+  }
   allCustomers=data||[];
   renderWorkerList('');
 }
@@ -1143,7 +1186,13 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 .btn-settings{background:rgba(255,255,255,.15);border:1px solid rgba(255,255,255,.3);color:white;padding:7px 11px;border-radius:9px;font-family:'Cairo',sans-serif;font-size:11px;cursor:pointer;font-weight:700;}
 .no-del{background:var(--bg);border:1.5px solid var(--border);border-radius:10px;padding:9px 13px;font-size:11px;color:var(--text3);text-align:center;margin-top:10px;font-weight:600;}
 
-/* INSTALL ENTRY BUTTON */
+/* SUPABASE SLEEP ERROR */
+.sleep-box{background:var(--orange-light);border:2px solid #fcd34d;border-radius:18px;padding:28px 20px;text-align:center;margin:20px 0;}
+.sleep-ico{font-size:48px;margin-bottom:10px;}
+.sleep-title{font-size:18px;font-weight:900;color:var(--gold);margin-bottom:6px;}
+.sleep-sub{font-size:13px;color:#92400e;margin-bottom:16px;}
+.sleep-btn{display:inline-block;background:var(--green);color:white;padding:12px 24px;border-radius:12px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;text-decoration:none;margin-bottom:10px;}
+.sleep-hint{font-size:11px;color:#92400e;font-weight:600;}
 .btn-install-entry{width:100%;margin-top:14px;padding:13px;background:linear-gradient(135deg,#0f4c81,#1a6fc4);color:white;border:none;border-radius:13px;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 4px 16px rgba(15,76,129,.25);transition:all .2s;}
 .btn-install-entry:active{transform:scale(.97);}
 .btn-install-entry.pwa-ready{animation:pulse-install 2s infinite;}
