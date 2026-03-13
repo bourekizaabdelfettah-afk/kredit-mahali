@@ -445,19 +445,9 @@ function renderWorkerAction(c){
   $('wa-bal').textContent=money(b)+' دج';
   $('wa-bal').style.color=b>0?'#dc2626':'#16a34a';
   $('wa-bal-lbl').textContent=b>0?'💸 دين حالي':b<0?'✅ رصيد لصالحه':'✅ حسابه صافي';
-
-  // آخر معاملة
-  const txns=c.transactions||[];
-  const lastTxn=txns.length?txns[txns.length-1]:null;
-  const lastEl=$('wa-last');
-  if(lastTxn){
-    lastEl.style.display='flex';
-    $('wa-last-txt').textContent=`${lastTxn.type==='debt'?'💸 آخر دين':'✅ آخر دفعة'}: ${money(lastTxn.amount)} دج — ${fdate(lastTxn.date)}`;
-  } else {
-    lastEl.style.display='none';
-  }
   $('wa-step1').style.display='block';
   $('wa-step2').style.display='none';
+  $('wa-history-panel').style.display='none';
   $('wa-amount').value='';$('wa-desc').value='';
 }
 
