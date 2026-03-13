@@ -262,11 +262,23 @@ async function autoLoginCustomer(code){
 // ── CUSTOMER ──
 function renderCustomerView(c){
   const b=bal(c);
+  const late=isLate(c)&&b>0;
   showScreen('customer-screen');
   $('c-name').textContent=c.name;
   $('c-bal').textContent=money(b);
   $('c-bal').style.color=b>0?'#dc2626':'#16a34a';
   $('c-lbl').textContent=b>0?'💸 مبلغ الدين':b<0?'✅ رصيد لصالحك':'✅ حسابك صافي';
+
+  // تنبيه التأخر
+  const lateBox=$('c-late-box');
+  if(late){
+    const days=lateDays(c);
+    lateBox.innerHTML=`⚠️ حسابك متأخر ${days} يوم عن موعد السداد — تواصل مع المحل في أقرب وقت`;
+    lateBox.style.display='block';
+  } else {
+    lateBox.style.display='none';
+  }
+
   const txns=[...(c.transactions||[])].reverse();
   $('c-history').innerHTML=!txns.length
     ?'<div class="no-txn">لا توجد معاملات بعد</div>'
@@ -1189,6 +1201,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 
 /* CUSTOMER VIEW */
 #customer-screen{background:var(--bg);}
+.c-late-box{background:#fef3c7;border:2px solid #fcd34d;border-radius:14px;padding:14px 16px;margin:0 16px 12px;font-size:13px;font-weight:800;color:#92400e;text-align:center;line-height:1.6;}
 .acc-body{padding:16px;max-width:520px;margin:0 auto;}
 .welcome{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow);}
 .w-ico{font-size:28px;}
@@ -1426,6 +1439,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <div id="c-lbl"></div>
       <div class="ro">🔒 عرض فقط</div>
     </div>
+    <div id="c-late-box" class="c-late-box" style="display:none;"></div>
     <div class="hist-box">
       <div class="hh"><div class="hh-t">📜 سجل المعاملات</div></div>
       <div id="c-history"></div>
