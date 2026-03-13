@@ -1,6 +1,6 @@
-const CACHE = 'kredit-v1';
+const CACHE = 'kredit-v2';
 self.addEventListener('install', e => {
-  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/', '/index.html'])));
+  e.waitUntil(caches.open(CACHE).then(c => c.addAll(['/kredit-mahali/', '/kredit-mahali/index.html'])));
   self.skipWaiting();
 });
 self.addEventListener('activate', e => {
