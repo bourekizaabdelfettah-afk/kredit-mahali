@@ -21,7 +21,7 @@ const SUPABASE_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZ
 const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 
 const ADMIN_PASSWORD  = 'admin2025';
-const WORKER_PASSWORD = 'Newworker123';
+const WORKER_PASSWORD = 'worker123';
 const LATE_DAYS = { regular: 30, occasional: 7 };
 const BACKUP_INTERVAL_DAYS = 7;
 const BACKUP_AUTO_DAYS = 8;
@@ -73,6 +73,12 @@ window.openSettings=()=>{
   const s=getSettings();
   $('set-shop').value=s.shopName||'Your Local Market';
   $('set-phone').value=s.phone||'';
+  // حالة العامل
+  const disabled=localStorage.getItem('ylm_worker_disabled')==='1';
+  $('worker-toggle-btn').textContent=disabled?'🔴 العامل موقوف — اضغط لتفعيله':'🟢 العامل مفعّل — اضغط لإيقافه';
+  $('worker-toggle-btn').style.background=disabled?'#fee2e2':'#f0fdf4';
+  $('worker-toggle-btn').style.color=disabled?'#991b1b':'#166534';
+  $('worker-toggle-btn').style.borderColor=disabled?'#fca5a5':'#86efac';
   $('settings-modal').style.display='flex';
 };
 window.closeSettings=()=>$('settings-modal').style.display='none';
@@ -81,6 +87,24 @@ window.doSaveSettings=()=>{
   saveSettings(s);
   closeSettings();
   showToast('✅ تم حفظ الإعدادات');
+};
+window.toggleWorker=()=>{
+  const disabled=localStorage.getItem('ylm_worker_disabled')==='1';
+  if(disabled){
+    localStorage.removeItem('ylm_worker_disabled');
+    $('worker-toggle-btn').textContent='🟢 العامل مفعّل — اضغط لإيقافه';
+    $('worker-toggle-btn').style.background='#f0fdf4';
+    $('worker-toggle-btn').style.color='#166534';
+    $('worker-toggle-btn').style.borderColor='#86efac';
+    showToast('✅ تم تفعيل العامل');
+  } else {
+    localStorage.setItem('ylm_worker_disabled','1');
+    $('worker-toggle-btn').textContent='🔴 العامل موقوف — اضغط لتفعيله';
+    $('worker-toggle-btn').style.background='#fee2e2';
+    $('worker-toggle-btn').style.color='#991b1b';
+    $('worker-toggle-btn').style.borderColor='#fca5a5';
+    showToast('🔴 تم إيقاف العامل','err');
+  }
 };
 
 // ── BACKUP LOGIC ──
@@ -233,7 +257,14 @@ window.doLogin=()=>{
   const v=$('pw-inp').value.trim();
   $('login-err').style.display='none';
   if(v===ADMIN_PASSWORD){sessionStorage.setItem('ylm_role','admin');$('pw-inp').value='';showScreen('admin-screen');loadAll();}
-  else if(v===WORKER_PASSWORD){sessionStorage.setItem('ylm_role','worker');$('pw-inp').value='';showScreen('worker-screen');loadAllWorker();}
+  else if(v===WORKER_PASSWORD){
+    if(localStorage.getItem('ylm_worker_disabled')==='1'){
+      $('login-err').textContent='❌ تم إيقاف وصول العامل — تواصل مع صاحب المحل';
+      $('login-err').style.display='block';
+      return;
+    }
+    sessionStorage.setItem('ylm_role','worker');$('pw-inp').value='';showScreen('worker-screen');loadAllWorker();
+  }
   else{$('login-err').textContent='❌ كلمة السر غير صحيحة';$('login-err').style.display='block';}
 };
 
@@ -1695,6 +1726,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     <div class="frow"><label class="flbl">🏪 اسم المحل</label><input type="text" id="set-shop" class="finp" placeholder="Your Local Market"></div>
     <div class="frow"><label class="flbl">📞 رقم هاتف المحل</label><input type="tel" id="set-phone" class="finp" placeholder="0555 000 000"></div>
     <div style="font-size:11px;color:var(--text3);margin-bottom:12px;">يظهر رقم الهاتف في تقارير الطباعة فقط</div>
+    <button id="worker-toggle-btn" onclick="toggleWorker()" style="width:100%;padding:13px;border-radius:12px;border:1.5px solid;font-family:'Cairo',sans-serif;font-size:14px;font-weight:800;cursor:pointer;margin-bottom:12px;">🟢 العامل مفعّل — اضغط لإيقافه</button>
     <button class="btn-save" onclick="doSaveSettings()">حفظ الإعدادات ✓</button>
   </div>
 </div>
