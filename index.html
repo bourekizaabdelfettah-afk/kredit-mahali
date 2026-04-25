@@ -107,7 +107,69 @@ window.toggleWorker=()=>{
   }
 };
 
-// ── BACKUP LOGIC ──
+// ── FIREBASE FCM ──
+const FB_CONFIG = {
+  apiKey: "AIzaSyB3nwhWlIbSQFZdRNmJmZ2nCiIArG3mYVs",
+  authDomain: "kredit-mahali-3fcac.firebaseapp.com",
+  projectId: "kredit-mahali-3fcac",
+  storageBucket: "kredit-mahali-3fcac.firebasestorage.app",
+  messagingSenderId: "653857008624",
+  appId: "1:653857008624:web:19daa0044167819cbf8b35"
+};
+const VAPID_KEY = "BD0UgbqR7T1bfppbXdERQ9iyD-vKPU5Z2YlMpwJYP_WUe3ZsqXdwh9HQfL14Q4u9ILtYWLLZOrN7evjXCF0rccU";
+const FCM_TOKEN_KEY = "ylm_fcm_token";
+
+let fbApp=null, fbMsg=null;
+
+async function initFCM(){
+  try {
+    const {initializeApp} = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js');
+    const {getMessaging, getToken, onMessage} = await import('https://www.gstatic.com/firebasejs/10.7.1/firebase-messaging.js');
+    fbApp = initializeApp(FB_CONFIG);
+    fbMsg = getMessaging(fbApp);
+    onMessage(fbMsg, payload => {
+      showToast(`🔔 ${payload.notification?.title||''}: ${payload.notification?.body||''}`);
+    });
+    return {getToken, onMessage};
+  } catch(e) { return null; }
+}
+
+async function requestNotifPermission(){
+  if(!('Notification' in window)) return;
+  if(Notification.permission === 'granted') { await saveFCMToken(); return; }
+  if(Notification.permission === 'denied') return;
+  // اطلب الإذن
+  const perm = await Notification.requestPermission();
+  if(perm === 'granted') await saveFCMToken();
+}
+
+async function saveFCMToken(){
+  try {
+    const fcmLib = await initFCM();
+    if(!fcmLib) return;
+    const {getToken} = fcmLib;
+    const token = await getToken(fbMsg, {vapidKey: VAPID_KEY, serviceWorkerRegistration: await navigator.serviceWorker.ready});
+    if(token) {
+      // حفظ التوكن في Supabase مع الزبون
+      const code = localStorage.getItem('ylm_code');
+      if(code) {
+        await sb.from('customers').update({fcm_token: token}).eq('code', code);
+      }
+      localStorage.setItem(FCM_TOKEN_KEY, token);
+    }
+  } catch(e) {}
+}
+
+// إرسال إشعار للزبون عبر Supabase Edge Function
+async function sendNotifToCustomer(customerId, title, body){
+  try {
+    const {data} = await sb.from('customers').select('fcm_token').eq('id', customerId).single();
+    if(!data?.fcm_token) return;
+    await sb.functions.invoke('send-notification', {
+      body: {token: data.fcm_token, title, body}
+    });
+  } catch(e) {}
+}
 function getLastBackup(){ return parseInt(localStorage.getItem('ylm_last_backup')||'0'); }
 function setLastBackup(){ localStorage.setItem('ylm_last_backup', Date.now().toString()); }
 function daysSinceBackup(){ return Math.floor((Date.now()-getLastBackup())/86400000); }
@@ -280,13 +342,15 @@ window.checkCustomerCode=async()=>{
   if(error||!data){err.textContent='❌ الكود غير صحيح، تواصل مع المحل';err.style.display='block';return;}
   localStorage.setItem('ylm_code',code);
   renderCustomerView(data);startRT(data.id);
+  // اطلب إذن الإشعارات
+  setTimeout(()=>requestNotifPermission(),1500);
 };
 
 async function autoLoginCustomer(code){
   showLoader(true);
   const {data}=await sb.from('customers').select('*').eq('code',code).single();
   showLoader(false);
-  if(data){renderCustomerView(data);startRT(data.id);}
+  if(data){renderCustomerView(data);startRT(data.id);setTimeout(()=>requestNotifPermission(),1500);}
   else{localStorage.removeItem('ylm_code');showScreen('entry-screen');}
 }
 
@@ -556,6 +620,14 @@ window.confirmWorkerTxn=async()=>{
   const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
   closeWorkerAction();
   renderWorkerList($('w-search').value.trim());
+  // إرسال إشعار للزبون
+  const sw=getSettings();
+  const shopW=sw.shopName||'Your Local Market';
+  const wTitle=workerTxnType==='debt'?`💸 دين جديد — ${shopW}`:`✅ تم تسجيل دفعتك — ${shopW}`;
+  const wBody=workerTxnType==='debt'
+    ?`تم تسجيل دين ${money(amount)} دج باسمك`
+    :`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
+  sendNotifToCustomer(selectedCustomer.id, wTitle, wBody);
   showToast(workerTxnType==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
 };
 
@@ -829,6 +901,14 @@ window.addTransaction=async()=>{
   renderDetailModal(data,isAdmin);
   if(isAdmin){renderAdminStats();renderAlertBanner();applyFilter(currentFilter);}
   else{$('w-stat-debt').textContent=allCustomers.filter(c=>bal(c)>0).length;renderCustList('w-cust-list',allCustomers,false);}
+  // إرسال إشعار للزبون
+  const s=getSettings();
+  const shop=s.shopName||'Your Local Market';
+  const notifTitle=type==='debt'?`💸 دين جديد — ${shop}`:`✅ تم تسجيل دفعتك — ${shop}`;
+  const notifBody=type==='debt'
+    ?`تم تسجيل دين ${money(amount)} دج باسمك`
+    :`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
+  sendNotifToCustomer(selectedCustomer.id, notifTitle, notifBody);
   showToast(type==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
 };
 
