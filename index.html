@@ -374,6 +374,14 @@ function renderCustomerView(c){
     lateBox.style.display='none';
   }
 
+  // زر تفعيل الإشعارات
+  const notifBox=$('c-notif-box');
+  if(Notification.permission==='denied'||Notification.permission==='default'){
+    notifBox.style.display='block';
+  } else {
+    notifBox.style.display='none';
+  }
+
   const txns=[...(c.transactions||[])].reverse();
   $('c-history').innerHTML=!txns.length
     ?'<div class="no-txn">لا توجد معاملات بعد</div>'
@@ -388,6 +396,20 @@ function startRT(id){
     p=>renderCustomerView(p.new)).subscribe();
 }
 window.logoutCustomer=()=>{localStorage.removeItem('ylm_code');showScreen('entry-screen');$('code-inp').value='';};
+
+window.enableNotifs=async()=>{
+  if(Notification.permission==='denied'){
+    // إذا رفض مسبقاً — افتح إعدادات المتصفح
+    alert('لتفعيل الإشعارات:\nالإعدادات ← التطبيقات ← Chrome ← الإشعارات ← ابحث عن kredit-mahali وفعّله');
+    return;
+  }
+  const perm=await Notification.requestPermission();
+  if(perm==='granted'){
+    await saveFCMToken();
+    $('c-notif-box').style.display='none';
+    showToast('✅ تم تفعيل الإشعارات');
+  }
+};
 
 // ── SUPABASE ERROR HANDLER ──
 function isSupabaseSleep(error){
@@ -1313,6 +1335,8 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 /* CUSTOMER VIEW */
 #customer-screen{background:var(--bg);}
 .c-late-box{background:#fef3c7;border:2px solid #fcd34d;border-radius:14px;padding:14px 16px;margin:0 16px 12px;font-size:13px;font-weight:800;color:#92400e;text-align:center;line-height:1.6;}
+.c-notif-box{background:#eff6ff;border:2px solid #93c5fd;border-radius:14px;padding:14px 16px;margin:0 16px 12px;font-size:13px;font-weight:700;color:#1e40af;text-align:center;line-height:1.8;}
+.c-notif-btn{display:block;width:100%;margin-top:10px;padding:10px;background:#2563eb;color:white;border:none;border-radius:10px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;}
 .acc-body{padding:16px;max-width:520px;margin:0 auto;}
 .welcome{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 16px;margin-bottom:14px;display:flex;align-items:center;gap:12px;box-shadow:var(--shadow);}
 .w-ico{font-size:28px;}
@@ -1550,6 +1574,10 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <div class="ro">🔒 عرض فقط</div>
     </div>
     <div id="c-late-box" class="c-late-box" style="display:none;"></div>
+    <div id="c-notif-box" class="c-notif-box" style="display:none;">
+      🔔 فعّل الإشعارات لتصلك تنبيهات فورية عند تسجيل أي معاملة
+      <button onclick="enableNotifs()" class="c-notif-btn">تفعيل الإشعارات</button>
+    </div>
     <div class="hist-box">
       <div class="hh"><div class="hh-t">📜 سجل المعاملات</div></div>
       <div id="c-history"></div>
