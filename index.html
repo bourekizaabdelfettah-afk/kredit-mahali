@@ -145,19 +145,25 @@ async function requestNotifPermission(){
 
 async function saveFCMToken(){
   try {
+    // انتظر حتى يتسجل firebase-messaging-sw.js
+    const swReg = await navigator.serviceWorker.register('/kredit-mahali/firebase-messaging-sw.js');
+    await navigator.serviceWorker.ready;
+    
     const fcmLib = await initFCM();
     if(!fcmLib) return;
     const {getToken} = fcmLib;
-    const token = await getToken(fbMsg, {vapidKey: VAPID_KEY, serviceWorkerRegistration: await navigator.serviceWorker.ready});
+    const token = await getToken(fbMsg, {vapidKey: VAPID_KEY, serviceWorkerRegistration: swReg});
     if(token) {
-      // حفظ التوكن في Supabase مع الزبون
       const code = localStorage.getItem('ylm_code');
       if(code) {
-        await sb.from('customers').update({fcm_token: token}).eq('code', code);
+        const res = await sb.from('customers').update({fcm_token: token}).eq('code', code);
+        console.log('FCM token saved:', res);
       }
       localStorage.setItem(FCM_TOKEN_KEY, token);
     }
-  } catch(e) {}
+  } catch(e) {
+    console.error('saveFCMToken error:', e);
+  }
 }
 
 // إرسال إشعار للزبون عبر Supabase Edge Function
