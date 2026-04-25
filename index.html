@@ -23,6 +23,19 @@ const sb = supabase.createClient(SUPABASE_URL, SUPABASE_KEY);
 const ADMIN_PASSWORD  = 'admin2025';
 const WORKER_PASSWORD = 'worker123';
 const LATE_DAYS = { regular: 30, occasional: 7 };
+const SCAMMER_DAYS = 10; // أيام إضافية بعد انتهاء المهلة
+
+const isScammer=c=>{
+  if(c.customer_type==='regular') return false; // فقط العارضون
+  if(c.scammer) return true; // يدوي
+  if(bal(c)<=0) return false;
+  const txns=c.transactions||[];
+  const d=txns.length?txns.map(t=>new Date(t.date)):[];
+  if(!d.length) return false;
+  const ld=Math.max(...d);
+  const days=Math.floor((Date.now()-ld)/86400000);
+  return days>(LATE_DAYS.occasional+SCAMMER_DAYS);
+};
 const BACKUP_INTERVAL_DAYS = 7;
 const BACKUP_AUTO_DAYS = 8;
 
@@ -542,13 +555,14 @@ function renderWorkerList(q){
     const b=bal(c);
     const isReg=c.customer_type==='regular';
     const late=isLate(c);
-    return `<div class="w-card" onclick="openWorkerAction('${c.id}')">
+    const scammer=isScammer(c);
+    return `<div class="w-card${scammer?' w-scammer':''}" onclick="openWorkerAction('${c.id}')">
       <div class="w-av ${isReg?'reg':'occ'}">${c.name.charAt(0)}</div>
       <div class="w-info">
         <div class="w-cname">${c.name}</div>
         <div class="w-badges">
           <span class="wbadge ${isReg?'regular':'occasional'}">${isReg?'⭐ دائم':'👤 عارض'}</span>
-          ${late?`<span class="wbadge late">⚠️ متأخر</span>`:''}
+          ${scammer?`<span class="wbadge scammer">🚨 نصاب</span>`:late?`<span class="wbadge late">⚠️ متأخر</span>`:''}
         </div>
       </div>
       <div class="w-bal ${b>0?'debt':b<0?'credit':'zero'}">
@@ -748,12 +762,13 @@ function renderCustList(elId,list,isAdmin){
   if(!list.length){el.innerHTML='<div class="empty">لا يوجد زبائن</div>';return;}
   el.innerHTML=list.map(c=>{
     const b=bal(c),late=isLate(c),isReg=c.customer_type==='regular';
-    return `<div class="cust-card${late?' late':''}" onclick="openCustomerDetail('${c.id}',${isAdmin})">
+    const scammer=isScammer(c);
+    return `<div class="cust-card${late?' late':''}${scammer?' scammer':''}" onclick="openCustomerDetail('${c.id}',${isAdmin})">
       <div class="cc-av ${isReg?'reg':'occ'}">${c.name.charAt(0)}</div>
       <div class="cc-info">
         <div class="cc-name">${c.name}
           <span class="tbadge ${isReg?'regular':'occasional'}">${isReg?'⭐ دائم':'👤 عارض'}</span>
-          ${late?`<span class="lbadge">⚠️ ${lateDays(c)} يوم</span>`:''}
+          ${scammer?`<span class="tbadge scammer">🚨 نصاب</span>`:late?`<span class="lbadge">⚠️ ${lateDays(c)} يوم</span>`:''}
         </div>
         <div class="cc-code">${c.code}</div>
       </div>
@@ -810,6 +825,19 @@ function renderDetailModal(c,isAdmin){
   else lateEl.style.display='none';
   $('dm-type-row').style.display=isAdmin?'flex':'none';
   if(isAdmin)$('dm-type-sel').value=c.customer_type||'occasional';
+  // زر النصاب — فقط للمدير وللعارضين
+  const scammerRow=$('dm-scammer-row');
+  const scammerBtn=$('dm-scammer-btn');
+  if(isAdmin && c.customer_type!=='regular'){
+    scammerRow.style.display='block';
+    const isS=isScammer(c);
+    scammerBtn.textContent=isS?'✅ إزالة تصنيف النصاب':'🚨 تصنيف كنصاب';
+    scammerBtn.style.background=isS?'#f0fdf4':'#fee2e2';
+    scammerBtn.style.color=isS?'#16a34a':'#dc2626';
+    scammerBtn.style.borderColor=isS?'#86efac':'#fca5a5';
+  } else {
+    scammerRow.style.display='none';
+  }
   $('dm-del-btn').style.display=isAdmin?'block':'none';
   $('dm-no-del').style.display=isAdmin?'none':'block';
   $('dm-admin-acts').style.display=isAdmin?'flex':'none';
@@ -909,6 +937,19 @@ window.changeType=async()=>{
   selectedCustomer=data;const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
   renderDetailModal(data,true);renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
   showToast('✅ تم تغيير النوع');
+};
+
+window.toggleScammer=async()=>{
+  if(!selectedCustomer)return;
+  if(selectedCustomer.customer_type==='regular'){showToast('⚠️ فقط للزبائن العارضين','warn');return;}
+  const newVal=!selectedCustomer.scammer;
+  showLoader(true);
+  const {data,error}=await sb.from('customers').update({scammer:newVal}).eq('id',selectedCustomer.id).select().single();
+  showLoader(false);
+  if(error){showToast('❌ خطأ','err');return;}
+  selectedCustomer=data;const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
+  renderDetailModal(data,true);renderAdminStats();applyFilter(currentFilter);
+  showToast(newVal?'🚨 تم تصنيفه كنصاب':'✅ تم إزالة تصنيف النصاب');
 };
 
 window.addTransaction=async()=>{
@@ -1463,6 +1504,11 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 .wbadge.regular{background:#ede9fe;color:#6d28d9;}
 .wbadge.occasional{background:var(--green-light);color:var(--green);}
 .wbadge.late{background:var(--orange-light);color:var(--orange);border:1px solid #fcd34d;}
+.wbadge.scammer{background:#fee2e2;color:#dc2626;border:1px solid #fca5a5;}
+.tbadge.scammer{background:#fee2e2;color:#dc2626;}
+.cust-card.scammer{border-color:#fca5a5 !important;background:#fff5f5 !important;}
+.w-card.w-scammer{border-color:#fca5a5 !important;background:#fff5f5 !important;}
+.btn-scammer{width:100%;padding:11px;border:1.5px solid;border-radius:12px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;margin:8px 0;}
 .w-bal{text-align:left;flex-shrink:0;}
 .w-amt{font-size:17px;font-weight:900;direction:ltr;}
 .w-tag{font-size:11px;font-weight:700;text-align:center;margin-top:2px;}
@@ -1705,6 +1751,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <div class="trl">🏷️ نوع الزبون</div>
       <select id="dm-type-sel"><option value="occasional">👤 عارض (7 أيام)</option><option value="regular">⭐ دائم (30 يوم)</option></select>
       <button class="btn-ts" onclick="changeType()">تغيير ✓</button>
+    </div>
+    <div id="dm-scammer-row" style="display:none;">
+      <button id="dm-scammer-btn" onclick="toggleScammer()" class="btn-scammer"></button>
     </div>
     <div class="sect">➕ إضافة معاملة</div>
     <div class="txn-form">
