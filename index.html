@@ -41,7 +41,7 @@ const BACKUP_AUTO_DAYS = 8;
 
 // ── UTILS ──
 const money  = n => Math.abs(n).toLocaleString('fr-DZ');
-const fdate  = s => s ? new Date(s).toLocaleDateString('ar-DZ',{day:'2-digit',month:'short',year:'numeric'}) : '';
+const fdate  = s => { if(!s) return ''; const d=new Date(s); return d.toLocaleDateString('ar-DZ',{day:'2-digit',month:'short',year:'numeric'}) + ' — ' + d.toLocaleTimeString('ar-DZ',{hour:'2-digit',minute:'2-digit'}); };
 const bal    = c => (c.transactions||[]).reduce((s,t)=>t.type==='debt'?s+t.amount:s-t.amount,0);
 const genCode= ()=>{
   const L='ABCDEFGHJKLMNPQRSTUVWXYZ',N='0123456789';
@@ -189,154 +189,6 @@ async function sendNotifToCustomer(customerId, title, body){
     });
   } catch(e) {}
 }
-// ── VOICE MODE ──
-let voiceRole = 'worker';
-let voiceCustomer = null;
-let voiceTxnType = 'debt';
-
-window.openVoiceModal = (role) => {
-  voiceRole = role;
-  voiceCustomer = null;
-  voiceTxnType = 'debt';
-  $('vs-search').value = '';
-  $('vs-results').innerHTML = '';
-  $('vs-amount').value = '';
-  $('vs-desc').value = '';
-  $('vs-step1').style.display = 'block';
-  $('vs-step2').style.display = 'none';
-  $('vs-step3').style.display = 'none';
-  $('vs-step4').style.display = 'none';
-  $('voice-modal').style.display = 'flex';
-};
-
-window.closeVoiceModal = () => {
-  stopSpeech(null);
-  $('voice-modal').style.display = 'none';
-};
-
-window.vsSearch = () => {
-  const q = $('vs-search').value.trim().toLowerCase();
-  const res = $('vs-results');
-  if (!q) { res.innerHTML = ''; return; }
-  const matches = allCustomers.filter(c => c.name.toLowerCase().includes(q) || c.code.toLowerCase().includes(q)).slice(0, 5);
-  if (!matches.length) { res.innerHTML = '<div class="vs-no-result">لا توجد نتائج</div>'; return; }
-  res.innerHTML = matches.map(c => {
-    const b = bal(c);
-    return `<div class="vs-result-item" onclick="vsSelectCustomer('${c.id}')">
-      <div class="vs-ri-name">${c.name}</div>
-      <div class="vs-ri-bal ${b>0?'debt':b<0?'credit':'zero'}">${money(b)} دج</div>
-    </div>`;
-  }).join('');
-};
-
-window.vsSelectCustomer = (id) => {
-  voiceCustomer = allCustomers.find(c => c.id === id);
-  if (!voiceCustomer) return;
-  $('vs-chosen-name').textContent = `👤 ${voiceCustomer.name}`;
-  $('vs-step1').style.display = 'none';
-  $('vs-step2').style.display = 'block';
-};
-
-window.vsSelectType = (type) => {
-  voiceTxnType = type;
-  $('vs-chosen-name2').textContent = `👤 ${voiceCustomer.name} — ${type==='debt'?'💸 دين':'✅ دفعة'}`;
-  $('vs-type-label').textContent = type === 'debt' ? '💸 أدخل مبلغ الدين' : '✅ أدخل مبلغ الدفعة';
-  $('vs-step2').style.display = 'none';
-  $('vs-step3').style.display = 'block';
-  $('vs-amount').value = '';
-  $('vs-amount').focus();
-};
-
-window.vsStep3Next = () => {
-  const amount = parseFloat($('vs-amount').value);
-  if (!amount || amount <= 0) { showToast('❌ أدخل المبلغ', 'err'); return; }
-  $('vs-chosen-name3').textContent = `👤 ${voiceCustomer.name} — ${voiceTxnType==='debt'?'💸':'✅'} ${money(amount)} دج`;
-  $('vs-step3').style.display = 'none';
-  $('vs-step4').style.display = 'block';
-  $('vs-desc').value = '';
-};
-
-window.vsConfirm = async (skipDesc = false) => {
-  const amount = parseFloat($('vs-amount').value);
-  const desc = skipDesc ? '' : $('vs-desc').value.trim();
-  if (!amount || amount <= 0) { showToast('❌ المبلغ غير صحيح', 'err'); return; }
-  if (!voiceCustomer) return;
-  const txn = { type: voiceTxnType, amount, date: new Date().toISOString(), desc };
-  const txns = [...(voiceCustomer.transactions || []), txn];
-  showLoader(true);
-  const { data, error } = await sb.from('customers').update({ transactions: txns }).eq('id', voiceCustomer.id).select().single();
-  showLoader(false);
-  if (error) { showToast('❌ خطأ في الحفظ', 'err'); return; }
-  // تحديث
-  const i = allCustomers.findIndex(c => c.id === data.id);
-  if (i !== -1) allCustomers[i] = data;
-  if (voiceRole === 'admin') { renderAdminStats(); renderAlertBanner(); applyFilter(currentFilter); }
-  else { renderWorkerList($('w-search').value.trim()); }
-  // إشعار
-  const s = getSettings();
-  const shop = s.shopName || 'Your Local Market';
-  const nTitle = voiceTxnType === 'debt' ? `💸 دين جديد — ${shop}` : `✅ تم تسجيل دفعتك — ${shop}`;
-  const nBody = voiceTxnType === 'debt' ? `تم تسجيل دين ${money(amount)} دج باسمك` : `تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
-  sendNotifToCustomer(data.id, nTitle, nBody);
-  closeVoiceModal();
-  showToast(voiceTxnType === 'debt' ? '✅ تم تسجيل الدين' : '✅ تم تسجيل الدفعة');
-};
-let speechRecognition = null;
-
-// تحويل الأرقام العربية المنطوقة لأرقام
-function arabicWordsToNumber(text) {
-  const ones = {'صفر':0,'واحد':1,'اثنين':2,'اثنان':2,'ثلاثة':3,'أربعة':4,'اربعة':4,'خمسة':5,'ستة':6,'سبعة':7,'ثمانية':8,'تسعة':9,'عشرة':10,'أحد عشر':11,'اثنا عشر':12,'ثلاثة عشر':13,'أربعة عشر':14,'خمسة عشر':15,'ستة عشر':16,'سبعة عشر':17,'ثمانية عشر':18,'تسعة عشر':19,'عشرين':20,'ثلاثين':30,'أربعين':40,'خمسين':50,'ستين':60,'سبعين':70,'ثمانين':80,'تسعين':90};
-  const hundreds = {'مية':100,'مائة':100,'مئة':100,'مئتين':200,'ميتين':200,'ثلاثمية':300,'ثلاثمائة':300,'أربعمية':400,'اربعمية':400,'خمسمية':500,'خمسمائة':500,'ستمية':600,'ستمائة':600,'سبعمية':700,'سبعمائة':700,'ثمانمية':800,'ثمانمائة':800,'تسعمية':900,'تسعمائة':900};
-  const multipliers = {'ألف':1000,'الف':1000,'آلاف':1000,'ألاف':1000,'مليون':1000000,'مليار':1000000000};
-  let t = text.trim();
-  if (!isNaN(t) && t !== '') return parseInt(t);
-  let total = 0, current = 0;
-  t = t.replace(/\bو\b/g, ' ');
-  const words = t.split(/\s+/).filter(Boolean);
-  for (let w of words) {
-    if (ones[w] !== undefined) current += ones[w];
-    else if (hundreds[w] !== undefined) current += hundreds[w];
-    else if (multipliers[w] !== undefined) {
-      if (current === 0) current = 1;
-      total += current * multipliers[w];
-      current = 0;
-    }
-  }
-  total += current;
-  return total > 0 ? total : null;
-}
-
-function startSpeech(inputId, btn) {
-  const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-  if (!SR) { showToast('❌ المتصفح لا يدعم الميكروفون', 'err'); return; }
-  if (speechRecognition) { speechRecognition.stop(); speechRecognition = null; }
-  speechRecognition = new SR();
-  speechRecognition.lang = 'ar-DZ';
-  speechRecognition.continuous = false;
-  speechRecognition.interimResults = false;
-  btn.style.background = '#dc2626';
-  btn.style.color = 'white';
-  btn.textContent = '🔴';
-  speechRecognition.onresult = e => {
-    const transcript = e.results[0][0].transcript.trim();
-    const el = $(inputId);
-    if (el.type === 'number') {
-      const num = arabicWordsToNumber(transcript);
-      el.value = num !== null ? num : transcript;
-    } else {
-      el.value = transcript;
-    }
-  };
-  speechRecognition.onerror = () => stopSpeech(btn);
-  speechRecognition.onend = () => stopSpeech(btn);
-  speechRecognition.start();
-}
-
-function stopSpeech(btn) {
-  if (speechRecognition) { try { speechRecognition.stop(); } catch(e){} speechRecognition = null; }
-  if (btn) { btn.style.background=''; btn.style.color=''; btn.textContent='🎤'; }
-}
-
 // ── BACKUP LOGIC ──
 function setLastBackup(){ localStorage.setItem('ylm_last_backup', Date.now().toString()); }
 function daysSinceBackup(){ return Math.floor((Date.now()-getLastBackup())/86400000); }
@@ -1855,7 +1707,6 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     <div class="abar">
       <div class="sw"><span class="si-ico">🔍</span><input type="text" id="a-search" class="si" placeholder="ابحث بالاسم أو الكود..." oninput="adminSearch()"></div>
       <button class="btn-add" onclick="showAddModal()">+ زبون</button>
-      <button class="btn-voice-admin" onclick="openVoiceModal('admin')">🎤</button>
     </div>
     <div id="a-cust-list"><div class="empty">جاري التحميل...</div></div>
   </div>
@@ -1879,8 +1730,6 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <span class="w-search-ico">🔍</span>
       <input type="text" id="w-search" class="w-search-inp" placeholder="اكتب اسم الزبون..." oninput="workerSearch()" autocomplete="off">
     </div>
-    <!-- زر التسجيل الصوتي -->
-    <button class="w-voice-btn" onclick="openVoiceModal('worker')">🎤 تسجيل بالصوت</button>
     <!-- زر إضافة زبون -->
     <button class="w-add-btn" onclick="showAddModal()">➕ إضافة زبون جديد</button>
     <!-- قائمة الزبائن -->
@@ -1934,15 +1783,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     <div class="txn-form">
       <div class="trow">
         <select id="dm-txn-type" class="finp"><option value="debt">💸 دين</option><option value="payment">✅ دفعة</option></select>
-        <div class="mic-wrap">
-          <input type="number" id="dm-txn-amount" class="finp" placeholder="المبلغ (دج)" min="1">
-          <button class="btn-mic" onpointerdown="startSpeech('dm-txn-amount',this)" onpointerup="stopSpeech(this)" onpointerleave="stopSpeech(this)">🎤</button>
-        </div>
+        <input type="number" id="dm-txn-amount" class="finp" placeholder="المبلغ (دج)" min="1">
       </div>
-      <div class="mic-wrap" style="margin-bottom:9px;">
-        <input type="text" id="dm-txn-desc" class="finp" placeholder="الوصف (اختياري)...">
-        <button class="btn-mic" onpointerdown="startSpeech('dm-txn-desc',this)" onpointerup="stopSpeech(this)" onpointerleave="stopSpeech(this)">🎤</button>
-      </div>
+      <input type="text" id="dm-txn-desc" class="finp" placeholder="الوصف (اختياري)..." style="margin-bottom:9px;">
       <button class="btn-at" onclick="addTransaction()">تسجيل ✓</button>
     </div>
     <div class="sect">📜 سجل المعاملات</div>
@@ -1996,15 +1839,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     <!-- STEP 2: أدخل المبلغ -->
     <div id="wa-step2" style="display:none;">
       <div class="wa-step-title" id="wa-step2-title">المبلغ؟</div>
-      <div class="mic-wrap" style="margin-bottom:12px;">
-        <input type="number" id="wa-amount" class="wa-amount-inp" placeholder="0" min="1" inputmode="numeric">
-        <button class="btn-mic btn-mic-lg" onpointerdown="startSpeech('wa-amount',this)" onpointerup="stopSpeech(this)" onpointerleave="stopSpeech(this)">🎤</button>
-      </div>
+      <input type="number" id="wa-amount" class="wa-amount-inp" placeholder="0" min="1" inputmode="numeric">
       <div class="wa-desc-wrap">
-        <div class="mic-wrap" style="margin-bottom:12px;">
-          <input type="text" id="wa-desc" class="finp" placeholder="ملاحظة (اختياري)...">
-          <button class="btn-mic" onpointerdown="startSpeech('wa-desc',this)" onpointerup="stopSpeech(this)" onpointerleave="stopSpeech(this)">🎤</button>
-        </div>
+        <input type="text" id="wa-desc" class="finp" placeholder="ملاحظة (اختياري)..." style="margin-bottom:12px;">
       </div>
       <button class="wa-confirm-btn" onclick="confirmWorkerTxn()">تأكيد ✓</button>
       <button class="wa-back-btn" onclick="backToStep1()">← رجوع</button>
@@ -2021,56 +1858,6 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
   </div>
 </div>
 
-<!-- VOICE MODE MODAL -->
-<div class="modal" id="voice-modal">
-  <div class="mbox voice-mbox">
-    <div class="mhd"><div class="mt">🎤 التسجيل الصوتي</div><button class="btn-close" onclick="closeVoiceModal()">✕</button></div>
-
-    <!-- الخطوة 1: البحث عن الزبون -->
-    <div id="vs-step1">
-      <div class="vs-label">👤 ابحث عن الزبون</div>
-      <div class="mic-wrap">
-        <input type="text" id="vs-search" class="finp" placeholder="اكتب أو تكلم..." oninput="vsSearch()">
-        <button class="btn-mic" onpointerdown="startSpeech('vs-search',this);vsSearchLive=true" onpointerup="stopSpeech(this);setTimeout(vsSearch,300)" onpointerleave="stopSpeech(this);setTimeout(vsSearch,300)">🎤</button>
-      </div>
-      <div id="vs-results" class="vs-results"></div>
-    </div>
-
-    <!-- الخطوة 2: اختيار النوع -->
-    <div id="vs-step2" style="display:none;">
-      <div class="vs-customer-chosen" id="vs-chosen-name"></div>
-      <div class="vs-label">💸 نوع المعاملة</div>
-      <div class="vs-type-btns">
-        <button class="vs-type-btn debt" onclick="vsSelectType('debt')">💸 دين</button>
-        <button class="vs-type-btn payment" onclick="vsSelectType('payment')">✅ دفعة</button>
-      </div>
-    </div>
-
-    <!-- الخطوة 3: المبلغ -->
-    <div id="vs-step3" style="display:none;">
-      <div class="vs-customer-chosen" id="vs-chosen-name2"></div>
-      <div class="vs-label" id="vs-type-label">💸 المبلغ</div>
-      <div class="mic-wrap">
-        <input type="number" id="vs-amount" class="finp" placeholder="المبلغ..." inputmode="numeric">
-        <button class="btn-mic" onpointerdown="startSpeech('vs-amount',this)" onpointerup="stopSpeech(this)" onpointerleave="stopSpeech(this)">🎤</button>
-      </div>
-      <button class="vs-next-btn" onclick="vsStep3Next()">التالي ←</button>
-    </div>
-
-    <!-- الخطوة 4: الوصف -->
-    <div id="vs-step4" style="display:none;">
-      <div class="vs-customer-chosen" id="vs-chosen-name3"></div>
-      <div class="vs-label">📝 الوصف (اختياري)</div>
-      <div class="mic-wrap">
-        <input type="text" id="vs-desc" class="finp" placeholder="اكتب أو تكلم...">
-        <button class="btn-mic" onpointerdown="startSpeech('vs-desc',this)" onpointerup="stopSpeech(this)" onpointerleave="stopSpeech(this)">🎤</button>
-      </div>
-      <button class="vs-confirm-btn" onclick="vsConfirm()">✓ تأكيد التسجيل</button>
-      <button class="vs-skip-btn" onclick="vsConfirm(true)">تخطي الوصف →</button>
-    </div>
-
-  </div>
-</div>
 <div class="modal" id="edit-txn-modal" onclick="if(event.target===this)closeEditTxn()">
   <div class="mbox">
     <div class="mhd"><div class="mt">✏️ تعديل المعاملة</div><button class="btn-close" onclick="closeEditTxn()">✕</button></div>
