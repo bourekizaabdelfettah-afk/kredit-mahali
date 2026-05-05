@@ -26,13 +26,12 @@ const LATE_DAYS = { regular: 30, occasional: 7 };
 const SCAMMER_DAYS = 10; // أيام إضافية بعد انتهاء المهلة
 
 const isScammer=c=>{
-  if(c.customer_type==='regular') return false; // فقط العارضون
-  if(c.scammer) return true; // يدوي
+  if(c.customer_type==='regular') return false;
+  if(c.scammer) return true;
   if(bal(c)<=0) return false;
   const txns=c.transactions||[];
-  const d=txns.length?txns.map(t=>new Date(t.date)):[];
-  if(!d.length) return false;
-  const ld=Math.max(...d);
+  if(!txns.length) return false;
+  const ld=Math.max(...txns.map(t=>new Date(t.date).getTime()));
   const days=Math.floor((Date.now()-ld)/86400000);
   return days>(LATE_DAYS.occasional+SCAMMER_DAYS);
 };
@@ -512,6 +511,7 @@ window.applyFilter=f=>{
   if(f==='late')list=list.filter(c=>isLate(c));
   else if(f==='regular')list=list.filter(c=>c.customer_type==='regular');
   else if(f==='occasional')list=list.filter(c=>c.customer_type!=='regular');
+  else if(f==='scammer')list=list.filter(c=>isScammer(c));
   const q=$('a-search').value.trim().toLowerCase();
   if(q)list=list.filter(c=>c.name.toLowerCase().includes(q)||c.code.toLowerCase().includes(q));
   renderCustList('a-cust-list',list,true);
@@ -538,20 +538,27 @@ function renderWorkerList(q){
   const list=q?allCustomers.filter(c=>c.name.includes(q)||c.code.includes(q.toUpperCase())):allCustomers;
   const el=$('w-list');
 
-  // بانر المتأخرين — يظهر فقط عند عدم البحث
+  // بانر المتأخرين
   const late=allCustomers.filter(c=>isLate(c)&&bal(c)>0);
+  const scammers=allCustomers.filter(c=>isScammer(c));
   const banner=(!q&&late.length)
     ?`<div class="w-late-banner" onclick="workerFilterLate()">
         <span>⚠️ ${late.length} زبون متأخر في السداد</span>
         <span class="w-late-arrow">←</span>
       </div>`
     :'';
+  const scammerBanner=(!q&&scammers.length)
+    ?`<div class="w-scammer-banner" onclick="workerFilterScammer()">
+        <span>🚨 ${scammers.length} نصاب</span>
+        <span class="w-late-arrow">←</span>
+      </div>`
+    :'';
 
   if(!list.length){
-    el.innerHTML=banner+`<div class="w-empty">${q?'🔍 لا توجد نتائج':'لا يوجد زبائن بعد'}</div>`;
+    el.innerHTML=banner+scammerBanner+`<div class="w-empty">${q?'🔍 لا توجد نتائج':'لا يوجد زبائن بعد'}</div>`;
     return;
   }
-  el.innerHTML=banner+list.map(c=>{
+  el.innerHTML=banner+scammerBanner+list.map(c=>{
     const b=bal(c);
     const isReg=c.customer_type==='regular';
     const late=isLate(c);
@@ -572,6 +579,30 @@ function renderWorkerList(q){
     </div>`;
   }).join('');
 }
+
+window.workerFilterScammer=()=>{
+  const scammers=allCustomers.filter(c=>isScammer(c));
+  const el=$('w-list');
+  el.innerHTML=`<div class="w-scammer-banner-active">🚨 عرض النصابون فقط — <span onclick="renderWorkerList('')" style="cursor:pointer;text-decoration:underline;">عرض الكل</span></div>`
+  +scammers.map(c=>{
+    const b=bal(c);
+    const isReg=c.customer_type==='regular';
+    return `<div class="w-card w-scammer" onclick="openWorkerAction('${c.id}')">
+      <div class="w-av ${isReg?'reg':'occ'}">${c.name.charAt(0)}</div>
+      <div class="w-info">
+        <div class="w-cname">${c.name}</div>
+        <div class="w-badges">
+          <span class="wbadge ${isReg?'regular':'occasional'}">${isReg?'⭐ دائم':'👤 عارض'}</span>
+          <span class="wbadge scammer">🚨 نصاب</span>
+        </div>
+      </div>
+      <div class="w-bal debt">
+        <div class="w-amt">${money(b)}</div>
+        <div class="w-tag">دين</div>
+      </div>
+    </div>`;
+  }).join('');
+};
 
 window.workerFilterLate=()=>{
   const late=allCustomers.filter(c=>isLate(c)&&bal(c)>0);
@@ -1566,6 +1597,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 .w-late-arrow{font-size:16px;}
 .wa-history-btn{background:none;border:none;color:var(--text3);font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;padding:6px 14px;border-radius:8px;}
 .w-late-banner-active{background:#fee2e2;border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;font-size:13px;font-weight:800;color:#991b1b;}
+.w-scammer-banner{background:#fee2e2;border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:13px;font-weight:800;color:#991b1b;}
+.w-scammer-banner-active{background:#fee2e2;border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;font-size:13px;font-weight:800;color:#991b1b;}
+#filter-scammer.active{background:#dc2626;border-color:#dc2626;color:white;}
 .late-card{border-color:#fca5a5 !important;}
 .wa-history-btn:active{background:var(--bg);}
 .wa-hist-title{font-size:12px;font-weight:800;color:var(--text3);margin:10px 0 8px;text-align:center;letter-spacing:.5px;}
@@ -1703,6 +1737,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
       <button class="filter-btn" id="filter-late" onclick="applyFilter('late')">⚠️ المتأخرون</button>
       <button class="filter-btn" id="filter-regular" onclick="applyFilter('regular')">⭐ الدائمون</button>
       <button class="filter-btn" id="filter-occasional" onclick="applyFilter('occasional')">👤 العارضون</button>
+      <button class="filter-btn" id="filter-scammer" onclick="applyFilter('scammer')">🚨 النصابون</button>
     </div>
     <div class="abar">
       <div class="sw"><span class="si-ico">🔍</span><input type="text" id="a-search" class="si" placeholder="ابحث بالاسم أو الكود..." oninput="adminSearch()"></div>
