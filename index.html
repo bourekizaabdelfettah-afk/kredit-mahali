@@ -47,8 +47,19 @@ const genCode= ()=>{
   return 'ZB-'+[...Array(2)].map(()=>L[Math.random()*L.length|0]).join('')+[...Array(4)].map(()=>N[Math.random()*N.length|0]).join('');
 };
 const lastDebtDate=c=>{
-  const d=(c.transactions||[]).filter(t=>t.type==='debt');
-  return d.length?new Date(Math.max(...d.map(t=>new Date(t.date)))):null;
+  const txns=c.transactions||[];
+  let running=0;
+  let firstUnpaidDate=null;
+  for(const t of txns){
+    if(t.type==='debt'){
+      if(running<=0) firstUnpaidDate=t.date;
+      running+=t.amount;
+    } else {
+      running-=t.amount;
+      if(running<=0) firstUnpaidDate=null;
+    }
+  }
+  return firstUnpaidDate?new Date(firstUnpaidDate):null;
 };
 const isLate=c=>{
   if(bal(c)<=0)return false;
