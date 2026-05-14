@@ -505,14 +505,24 @@ function renderAlertBanner(){
   const el=$('alert-banner');
   if(!late.length){el.style.display='none';return;}
   el.style.display='block';
-  el.innerHTML=`<div class="ab-hd"><span>⚠️ ${late.length} زبون متأخر في السداد</span><button class="ab-btn" onclick="applyFilter('late')">عرضهم</button></div>
-    <div class="ab-list">${late.map(c=>`<div class="ab-item" onclick="openCustomerDetail('${c.id}',true)">
+  el.innerHTML=`<div class="ab-hd">
+    <span>⚠️ ${late.length} زبون متأخر في السداد</span>
+    <button class="ab-btn" onclick="toggleAlertList(this)">عرض ▼</button>
+  </div>
+  <div class="ab-list" id="ab-list-inner" style="display:none;">${late.map(c=>`<div class="ab-item" onclick="openCustomerDetail('${c.id}',true)">
       <span class="ab-name">${c.name}</span>
       <span class="ab-tag ${c.customer_type==='regular'?'regular':'occasional'}">${c.customer_type==='regular'?'⭐':'👤'}</span>
       <span class="ab-days">تأخر ${lateDays(c)} يوم</span>
       <span class="ab-bal">${money(bal(c))} دج</span>
     </div>`).join('')}</div>`;
 }
+
+window.toggleAlertList=(btn)=>{
+  const list=$('ab-list-inner');
+  const isHidden=list.style.display==='none';
+  list.style.display=isHidden?'block':'none';
+  btn.textContent=isHidden?'إخفاء ▲':'عرض ▼';
+};
 
 window.applyFilter=f=>{
   currentFilter=f;
