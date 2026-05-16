@@ -983,19 +983,17 @@ function calcArchiveData(c) {
   }
   if (lastPayIdx === -1) return null;
 
-  // المتبقي الحقيقي = الرصيد الكلي الحالي ناقص مجموع ما بعد الدفعة
-  const currentBal = bal(c);
-  const afterPay = txns.slice(lastPayIdx + 1);
-  let balAfter = 0;
-  for (const t of afterPay) {
-    balAfter += t.type === 'debt' ? t.amount : -t.amount;
-  }
-  const remaining = Math.max(0, currentBal - balAfter);
-
   // ما يذهب للأرشيف: كل شيء حتى آخر دفعة (شاملة)
   const toArchive = txns.slice(0, lastPayIdx + 1);
   // ما يبقى: كل شيء بعد الدفعة
   const toKeep = txns.slice(lastPayIdx + 1);
+
+  // المتبقي = رصيد ما في الأرشيف (قد يكون موجب أو صفر)
+  let arcBal = 0;
+  for (const t of toArchive) {
+    arcBal += t.type === 'debt' ? t.amount : -t.amount;
+  }
+  const remaining = Math.max(0, arcBal);
 
   // السجل الجديد: المتبقي (إن وجد) + ما بعد الدفعة
   const newTxns = [];
