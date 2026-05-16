@@ -981,17 +981,18 @@ function calcArchiveData(c) {
   for (let i = txns.length - 1; i >= 0; i--) {
     if (txns[i].type === 'payment') { lastPayIdx = i; break; }
   }
-  if (lastPayIdx === -1) return null; // لا توجد دفعة
+  if (lastPayIdx === -1) return null;
 
-  // حساب الرصيد قبل آخر دفعة
-  let balBeforePay = 0;
-  for (let i = 0; i < lastPayIdx; i++) {
-    balBeforePay += txns[i].type === 'debt' ? txns[i].amount : -txns[i].amount;
+  // المتبقي الحقيقي = الرصيد الكلي الحالي ناقص مجموع ما بعد الدفعة
+  const currentBal = bal(c);
+  const afterPay = txns.slice(lastPayIdx + 1);
+  let balAfter = 0;
+  for (const t of afterPay) {
+    balAfter += t.type === 'debt' ? t.amount : -t.amount;
   }
-  const payAmount = txns[lastPayIdx].amount;
-  const remaining = Math.max(0, balBeforePay - payAmount);
+  const remaining = Math.max(0, currentBal - balAfter);
 
-  // ما يذهب للأرشيف: كل شيء قبل وبعد الدفعة + الدفعة نفسها
+  // ما يذهب للأرشيف: كل شيء حتى آخر دفعة (شاملة)
   const toArchive = txns.slice(0, lastPayIdx + 1);
   // ما يبقى: كل شيء بعد الدفعة
   const toKeep = txns.slice(lastPayIdx + 1);
@@ -1002,7 +1003,7 @@ function calcArchiveData(c) {
     newTxns.push({
       type: 'debt',
       amount: remaining,
-      desc: `متبقي من حساب سابق`,
+      desc: 'متبقي من حساب سابق',
       date: txns[lastPayIdx].date
     });
   }
