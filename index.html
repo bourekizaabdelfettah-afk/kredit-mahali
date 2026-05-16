@@ -877,6 +877,12 @@ function renderDetailModal(c,isAdmin){
   else lateEl.style.display='none';
   $('dm-type-row').style.display=isAdmin?'flex':'none';
   if(isAdmin)$('dm-type-sel').value=c.customer_type||'occasional';
+  // زر الأرشفة اليدوية
+  const arcBtn=$('btn-manual-archive');
+  if(arcBtn){
+    const hasPayment=(c.transactions||[]).some(t=>t.type==='payment');
+    arcBtn.style.display=(isAdmin && hasPayment)?'block':'none';
+  }
   // زر النصاب — فقط للمدير وللعارضين
   const scammerRow=$('dm-scammer-row');
   const scammerBtn=$('dm-scammer-btn');
@@ -919,7 +925,156 @@ function renderDetailModal(c,isAdmin){
     }).join('');
   $('dm-txn-desc').value='';$('dm-txn-amount').value='';$('dm-txn-type').value='debt';
   $('detail-modal')._isAdmin=isAdmin;
+
+  // عرض قسم الأرشيف للمدير فقط
+  const archiveBox=$('dm-archive-box');
+  if(archiveBox){
+    const archives=c.archived_txns||[];
+    if(isAdmin && archives.length){
+      archiveBox.style.display='block';
+      archiveBox.innerHTML=archives.map((arc,idx)=>`
+        <div class="archive-entry">
+          <div class="archive-hd">
+            <span>📦 أرشيف ${idx+1} — ${arc.txns?.length||0} معاملة</span>
+            <div>
+              <button class="btn-arc-restore" onclick="restoreArchive(${idx})">↩️ استرجاع</button>
+              <button class="btn-arc-toggle" onclick="toggleArcDetail(${idx})">عرض ▼</button>
+            </div>
+          </div>
+          <div id="arc-detail-${idx}" style="display:none;">
+            ${(arc.txns||[]).slice().reverse().map(t=>`
+              <div class="txn-item arc-txn">
+                <div class="txn-dot ${t.type}"></div>
+                <div class="txn-info">
+                  <div class="txn-desc">${t.desc||'—'}</div>
+                  <div class="txn-date">${fdate(t.date)}</div>
+                </div>
+                <div class="txn-amt ${t.type}">${t.type==='debt'?'+':'-'} ${money(t.amount)} دج</div>
+              </div>`).join('')}
+          </div>
+        </div>`).join('');
+    } else {
+      archiveBox.style.display='none';
+    }
+  }
 }
+
+window.toggleArcDetail=(idx)=>{
+  const el=$(`arc-detail-${idx}`);
+  if(!el)return;
+  const isHidden=el.style.display==='none';
+  el.style.display=isHidden?'block':'none';
+  const btn=el.previousElementSibling?.querySelector('.btn-arc-toggle');
+  if(btn)btn.textContent=isHidden?'إخفاء ▲':'عرض ▼';
+};
+
+// ── ARCHIVE SYSTEM ──
+const MAX_ARCHIVES = 2; // أقصى عدد أرشيفات محفوظة
+
+// حساب المتبقي قبل آخر دفعة كبيرة
+function calcArchiveData(c) {
+  const txns = c.transactions || [];
+  if (!txns.length) return null;
+
+  // ابحث عن آخر دفعة
+  let lastPayIdx = -1;
+  for (let i = txns.length - 1; i >= 0; i--) {
+    if (txns[i].type === 'payment') { lastPayIdx = i; break; }
+  }
+  if (lastPayIdx === -1) return null; // لا توجد دفعة
+
+  // حساب الرصيد قبل آخر دفعة
+  let balBeforePay = 0;
+  for (let i = 0; i < lastPayIdx; i++) {
+    balBeforePay += txns[i].type === 'debt' ? txns[i].amount : -txns[i].amount;
+  }
+  const payAmount = txns[lastPayIdx].amount;
+  const remaining = Math.max(0, balBeforePay - payAmount);
+
+  // ما يذهب للأرشيف: كل شيء قبل وبعد الدفعة + الدفعة نفسها
+  const toArchive = txns.slice(0, lastPayIdx + 1);
+  // ما يبقى: كل شيء بعد الدفعة
+  const toKeep = txns.slice(lastPayIdx + 1);
+
+  // السجل الجديد: المتبقي (إن وجد) + ما بعد الدفعة
+  const newTxns = [];
+  if (remaining > 0) {
+    newTxns.push({
+      type: 'debt',
+      amount: remaining,
+      desc: `متبقي من حساب سابق`,
+      date: txns[lastPayIdx].date
+    });
+  }
+  newTxns.push(...toKeep);
+
+  return { toArchive, newTxns, remaining };
+}
+
+// حفظ الأرشيف مع الحد الأقصى
+function buildNewArchive(c, toArchive) {
+  const current = c.archived_txns || [];
+  // أضف الجديد وحافظ على آخر MAX_ARCHIVES فقط
+  const updated = [...current, { date: new Date().toISOString(), txns: toArchive }];
+  if (updated.length > MAX_ARCHIVES) updated.shift(); // احذف الأقدم
+  return updated;
+}
+
+// أرشفة يدوية من المدير
+window.doManualArchive = async () => {
+  if (!selectedCustomer) return;
+  const data = calcArchiveData(selectedCustomer);
+  if (!data) { showToast('⚠️ لا توجد دفعة لأرشفتها', 'warn'); return; }
+
+  const { toArchive, newTxns, remaining } = data;
+  const msg = remaining > 0
+    ? `سيُحفظ السجل القديم في الأرشيف\nوسيبقى متبقي ${money(remaining)} دج في السجل الجديد\n\nالمجموع الكلي لن يتغير ✅\n\nهل تريد المتابعة؟`
+    : `سيُحفظ السجل القديم في الأرشيف\nالسجل الجديد يبدأ نظيفاً\n\nهل تريد المتابعة؟`;
+
+  if (!confirm(msg)) return;
+
+  const newArchive = buildNewArchive(selectedCustomer, toArchive);
+  showLoader(true);
+  const { data: res, error } = await sb.from('customers')
+    .update({ transactions: newTxns, archived_txns: newArchive })
+    .eq('id', selectedCustomer.id).select().single();
+  showLoader(false);
+  if (error) { showToast('❌ خطأ', 'err'); return; }
+  selectedCustomer = res;
+  const i = allCustomers.findIndex(c => c.id === res.id);
+  if (i !== -1) allCustomers[i] = res;
+  renderDetailModal(res, true);
+  renderAdminStats(); renderAlertBanner(); applyFilter(currentFilter);
+  showToast('📦 تم الأرشفة بنجاح ✅');
+};
+
+// استرجاع من الأرشيف
+window.restoreArchive = async (archiveIdx) => {
+  if (!selectedCustomer) return;
+  const archives = selectedCustomer.archived_txns || [];
+  if (!archives[archiveIdx]) return;
+  if (!confirm('هل تريد استرجاع هذا الأرشيف؟\nسيُضاف للسجل الحالي في البداية')) return;
+
+  const toRestore = archives[archiveIdx].txns || [];
+  const currentTxns = selectedCustomer.transactions || [];
+  const merged = [...toRestore, ...currentTxns];
+
+  // احذف الأرشيف المسترجع
+  const newArchives = archives.filter((_, i) => i !== archiveIdx);
+
+  showLoader(true);
+  const { data: res, error } = await sb.from('customers')
+    .update({ transactions: merged, archived_txns: newArchives })
+    .eq('id', selectedCustomer.id).select().single();
+  showLoader(false);
+  if (error) { showToast('❌ خطأ', 'err'); return; }
+  selectedCustomer = res;
+  const i = allCustomers.findIndex(c => c.id === res.id);
+  if (i !== -1) allCustomers[i] = res;
+  renderDetailModal(res, true);
+  renderAdminStats(); renderAlertBanner(); applyFilter(currentFilter);
+  showToast('↩️ تم الاسترجاع بنجاح');
+};
 
 // ── EDIT TRANSACTION ──
 window.openEditTxn=(idx)=>{
@@ -1617,7 +1772,12 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 .w-late-banner{background:#fef3c7;border:1.5px solid #fcd34d;border-radius:14px;padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:13px;font-weight:800;color:#92400e;}
 .w-late-arrow{font-size:16px;}
 .wa-history-btn{background:none;border:none;color:var(--text3);font-family:'Cairo',sans-serif;font-size:12px;font-weight:700;cursor:pointer;padding:6px 14px;border-radius:8px;}
-.w-late-banner-active{background:#fee2e2;border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;font-size:13px;font-weight:800;color:#991b1b;}
+.btn-archive-manual{width:100%;padding:11px;background:#f8fafc;border:1.5px dashed var(--border2);color:var(--text3);border-radius:12px;font-family:'Cairo',sans-serif;font-size:13px;font-weight:800;cursor:pointer;margin-top:8px;}
+.archive-entry{background:#f8fafc;border:1.5px dashed var(--border2);border-radius:12px;padding:10px 14px;margin-bottom:8px;}
+.archive-hd{display:flex;justify-content:space-between;align-items:center;font-size:12px;font-weight:800;color:var(--text3);}
+.btn-arc-restore{padding:5px 10px;background:#f0fdf4;border:1px solid #86efac;color:#16a34a;border-radius:8px;font-family:'Cairo',sans-serif;font-size:11px;font-weight:800;cursor:pointer;margin-left:6px;}
+.btn-arc-toggle{padding:5px 10px;background:var(--bg);border:1px solid var(--border);color:var(--text3);border-radius:8px;font-family:'Cairo',sans-serif;font-size:11px;font-weight:700;cursor:pointer;}
+.arc-txn{opacity:0.7;}border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;font-size:13px;font-weight:800;color:#991b1b;}
 .w-scammer-banner{background:#fee2e2;border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;display:flex;justify-content:space-between;align-items:center;cursor:pointer;font-size:13px;font-weight:800;color:#991b1b;}
 .w-scammer-banner-active{background:#fee2e2;border:1.5px solid #fca5a5;border-radius:14px;padding:12px 16px;margin-bottom:12px;font-size:13px;font-weight:800;color:#991b1b;}
 #filter-scammer.active{background:#dc2626;border-color:#dc2626;color:white;}
@@ -1855,6 +2015,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     <div class="dm-acts2" id="dm-admin-acts" style="display:none;">
       <button class="btn-settle" onclick="settleAccount()">✅ تسوية الحساب</button>
       <button class="btn-print" onclick="printCustomerReport()">🖨️ طباعة تقرير</button>
+      <button class="btn-archive-manual" id="btn-manual-archive" onclick="doManualArchive()" style="display:none;">📦 أرشفة السجل</button>
+    </div>
+    <div id="dm-archive-box" style="display:none;margin-top:8px;"></div>
     </div>
     <div class="no-del" id="dm-no-del">🔒 الحذف غير متاح — تواصل مع صاحب المحل</div>
   </div>
