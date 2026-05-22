@@ -27,7 +27,8 @@ const SCAMMER_DAYS = 10; // أيام إضافية بعد انتهاء المهل
 
 const isScammer=c=>{
   if(c.customer_type==='regular') return false;
-  if(c.scammer) return true;
+  if(c.scammer===false) return false; // إزالة يدوية صريحة
+  if(c.scammer===true) return true;  // تصنيف يدوي صريح
   if(bal(c)<=0) return false;
   const txns=c.transactions||[];
   if(!txns.length) return false;
