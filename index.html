@@ -2144,6 +2144,23 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
   </div>
 </div>
 
-<script>if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});</script>
+<script>
+if('serviceWorker' in navigator){
+  navigator.serviceWorker.register('sw.js').then(reg=>{
+    reg.addEventListener('updatefound',()=>{
+      const newSW=reg.installing;
+      newSW.addEventListener('statechange',()=>{
+        if(newSW.state==='installed'&&navigator.serviceWorker.controller){
+          // يوجد تحديث جديد — حدّث تلقائياً
+          newSW.postMessage({type:'SKIP_WAITING'});
+          navigator.serviceWorker.addEventListener('controllerchange',()=>{
+            window.location.reload();
+          });
+        }
+      });
+    });
+  }).catch(()=>{});
+}
+</script>
 </body>
 </html>
