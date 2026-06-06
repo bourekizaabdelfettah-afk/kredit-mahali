@@ -786,7 +786,7 @@ window.openWorkerEditTxn=(idx)=>{
   $('edit-txn-desc').value=t.desc||'';
   const d=new Date(t.date);
   $('edit-txn-date').value=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
-  // حفظ مرجع أننا في وضع العامل
+  $('edit-txn-time').value=`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   $('edit-txn-modal')._isWorker=true;
   $('edit-txn-modal').style.display='flex';
 };
@@ -1085,10 +1085,11 @@ window.openEditTxn=(idx)=>{
   $('edit-txn-type').value=t.type;
   $('edit-txn-amount').value=t.amount;
   $('edit-txn-desc').value=t.desc||'';
-  // تحويل التاريخ لصيغة input date
   const d=new Date(t.date);
   const dateStr=`${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
+  const timeStr=`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
   $('edit-txn-date').value=dateStr;
+  $('edit-txn-time').value=timeStr;
   $('edit-txn-modal').style.display='flex';
 };
 window.closeEditTxn=()=>$('edit-txn-modal').style.display='none';
@@ -1102,8 +1103,10 @@ window.saveEditTxn=async()=>{
   const type=$('edit-txn-type').value;
   if(!amount||amount<=0){showToast('❌ أدخل المبلغ','err');return;}
   if(!dateVal){showToast('❌ أدخل التاريخ','err');return;}
+  const timeVal=$('edit-txn-time').value||'00:00';
+  const fullDate=new Date(`${dateVal}T${timeVal}:00`);
   const updatedTxns=[...(selectedCustomer.transactions||[])];
-  updatedTxns[idx]={...updatedTxns[idx],type,amount,desc:desc||(type==='debt'?'دين':'دفعة'),date:new Date(dateVal).toISOString()};
+  updatedTxns[idx]={...updatedTxns[idx],type,amount,desc:desc||(type==='debt'?'دين':'دفعة'),date:fullDate.toISOString()};
   showLoader(true);
   const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
   showLoader(false);
@@ -2095,6 +2098,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     </div>
     <div class="frow"><label class="flbl">التاريخ</label>
       <input type="date" id="edit-txn-date" class="finp">
+    </div>
+    <div class="frow"><label class="flbl">الوقت</label>
+      <input type="time" id="edit-txn-time" class="finp">
     </div>
     <button class="btn-save" onclick="saveEditTxn()">حفظ التعديل ✓</button>
   </div>
