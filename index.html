@@ -706,22 +706,19 @@ window.confirmWorkerTxn=async()=>{
   const amount=parseFloat($('wa-amount').value);
   if(!amount||amount<=0){showToast('❌ أدخل المبلغ','err');return;}
   const desc=$('wa-desc').value.trim()||(workerTxnType==='debt'?'دين':'دفعة');
-  const updatedTxns=[...(selectedCustomer.transactions||[]),{type:workerTxnType,amount,desc,date:new Date().toISOString()}];
+  const newTxn={type:workerTxnType,amount,desc,date:new Date().toISOString()};
   showLoader(true);
-  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  const {data,error}=await safeAppendTxn(selectedCustomer.id, newTxn);
   showLoader(false);
   if(error){showToast('❌ خطأ في الحفظ','err');return;}
   selectedCustomer=data;
   const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
   closeWorkerAction();
   renderWorkerList($('w-search').value.trim());
-  // إرسال إشعار للزبون
   const sw=getSettings();
   const shopW=sw.shopName||'Your Local Market';
   const wTitle=workerTxnType==='debt'?`💸 دين جديد — ${shopW}`:`✅ تم تسجيل دفعتك — ${shopW}`;
-  const wBody=workerTxnType==='debt'
-    ?`تم تسجيل دين ${money(amount)} دج باسمك`
-    :`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
+  const wBody=workerTxnType==='debt'?`تم تسجيل دين ${money(amount)} دج باسمك`:`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
   sendNotifToCustomer(selectedCustomer.id, wTitle, wBody);
   showToast(workerTxnType==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
 };
@@ -1162,6 +1159,15 @@ window.toggleScammer=async()=>{
   showToast(newVal?'🚨 تم تصنيفه كنصاب':'✅ تم إزالة تصنيف النصاب');
 };
 
+// دالة آمنة لإضافة معاملة — تجلب أحدث البيانات قبل الحفظ
+async function safeAppendTxn(customerId, newTxn) {
+  // جلب أحدث نسخة من Supabase مباشرة
+  const {data:fresh, error:fetchErr} = await sb.from('customers').select('transactions,archived_txns').eq('id',customerId).single();
+  if(fetchErr) return {error: fetchErr};
+  const updatedTxns = [...(fresh.transactions||[]), newTxn];
+  return await sb.from('customers').update({transactions: updatedTxns}).eq('id',customerId).select().single();
+}
+
 window.addTransaction=async()=>{
   if(!selectedCustomer)return;
   const desc=$('dm-txn-desc').value.trim();
@@ -1169,24 +1175,20 @@ window.addTransaction=async()=>{
   const type=$('dm-txn-type').value;
   const isAdmin=!!$('detail-modal')._isAdmin;
   if(!amount||amount<=0){showToast('❌ أدخل المبلغ','err');return;}
-  // desc is optional - use default if empty
   const finalDesc=desc||(type==='debt'?'دين':'دفعة');
-  const updatedTxns=[...(selectedCustomer.transactions||[]),{type,amount,desc:finalDesc,date:new Date().toISOString()}];
+  const newTxn={type,amount,desc:finalDesc,date:new Date().toISOString()};
   showLoader(true);
-  const {data,error}=await sb.from('customers').update({transactions:updatedTxns}).eq('id',selectedCustomer.id).select().single();
+  const {data,error}=await safeAppendTxn(selectedCustomer.id, newTxn);
   showLoader(false);
   if(error){showToast('❌ خطأ في الحفظ','err');return;}
   selectedCustomer=data;const i=allCustomers.findIndex(c=>c.id===data.id);if(i!==-1)allCustomers[i]=data;
   renderDetailModal(data,isAdmin);
   if(isAdmin){renderAdminStats();renderAlertBanner();applyFilter(currentFilter);}
   else{$('w-stat-debt').textContent=allCustomers.filter(c=>bal(c)>0).length;renderCustList('w-cust-list',allCustomers,false);}
-  // إرسال إشعار للزبون
   const s=getSettings();
   const shop=s.shopName||'Your Local Market';
   const notifTitle=type==='debt'?`💸 دين جديد — ${shop}`:`✅ تم تسجيل دفعتك — ${shop}`;
-  const notifBody=type==='debt'
-    ?`تم تسجيل دين ${money(amount)} دج باسمك`
-    :`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
+  const notifBody=type==='debt'?`تم تسجيل دين ${money(amount)} دج باسمك`:`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
   sendNotifToCustomer(selectedCustomer.id, notifTitle, notifBody);
   showToast(type==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
 };
