@@ -490,6 +490,52 @@ async function loadAll(){
   allCustomers=data||[];
   renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
   checkBackupReminder();
+  startAdminRT();
+}
+
+let adminRTChannel=null;
+function startAdminRT(){
+  if(adminRTChannel) adminRTChannel.unsubscribe();
+  adminRTChannel=sb.channel('admin-rt')
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'customers'},p=>{
+      const i=allCustomers.findIndex(c=>c.id===p.new.id);
+      if(i!==-1){
+        allCustomers[i]=p.new;
+        // تحديث التفاصيل إذا كان مفتوحاً
+        if(selectedCustomer?.id===p.new.id){
+          selectedCustomer=p.new;
+          const isAdmin=!!$('detail-modal')._isAdmin;
+          if($('detail-modal').style.display==='flex') renderDetailModal(p.new,isAdmin);
+        }
+      } else {
+        allCustomers.push(p.new);
+      }
+      renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+    })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'customers'},p=>{
+      allCustomers.push(p.new);
+      allCustomers.sort((a,b)=>a.name.localeCompare(b.name,'ar'));
+      renderAdminStats();renderAlertBanner();applyFilter(currentFilter);
+    })
+    .subscribe();
+}
+
+let workerRTChannel=null;
+function startWorkerRT(){
+  if(workerRTChannel) workerRTChannel.unsubscribe();
+  workerRTChannel=sb.channel('worker-rt')
+    .on('postgres_changes',{event:'UPDATE',schema:'public',table:'customers'},p=>{
+      const i=allCustomers.findIndex(c=>c.id===p.new.id);
+      if(i!==-1) allCustomers[i]=p.new;
+      else allCustomers.push(p.new);
+      renderWorkerList($('w-search').value.trim());
+    })
+    .on('postgres_changes',{event:'INSERT',schema:'public',table:'customers'},p=>{
+      allCustomers.push(p.new);
+      allCustomers.sort((a,b)=>a.name.localeCompare(b.name,'ar'));
+      renderWorkerList($('w-search').value.trim());
+    })
+    .subscribe();
 }
 
 function renderAdminStats(){
@@ -554,6 +600,7 @@ async function loadAllWorker(){
   }
   allCustomers=data||[];
   renderWorkerList('');
+  startWorkerRT();
 }
 
 function renderWorkerList(q){
