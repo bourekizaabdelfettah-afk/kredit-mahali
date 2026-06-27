@@ -200,7 +200,19 @@ async function sendNotifToCustomer(customerId, title, body){
     });
   } catch(e) {}
 }
-// ── BACKUP LOGIC ──
+// ── GOOGLE SHEETS SYNC ──
+const SHEETS_URL = 'https://script.google.com/macros/s/AKfycbxfsGqcmO3XESe2Sqlq9tZXJSswW177qQ9gKiJSM01azsb-neAnEv5GKFmjUsaEtW6p6g/exec';
+
+async function syncToSheets(){
+  try {
+    await fetch(SHEETS_URL, {
+      method: 'POST',
+      mode: 'no-cors',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({customers: allCustomers})
+    });
+  } catch(e) {}
+}
 function setLastBackup(){ localStorage.setItem('ylm_last_backup', Date.now().toString()); }
 function daysSinceBackup(){ return Math.floor((Date.now()-getLastBackup())/86400000); }
 
@@ -767,6 +779,7 @@ window.confirmWorkerTxn=async()=>{
   const wTitle=workerTxnType==='debt'?`💸 دين جديد — ${shopW}`:`✅ تم تسجيل دفعتك — ${shopW}`;
   const wBody=workerTxnType==='debt'?`تم تسجيل دين ${money(amount)} دج باسمك`:`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
   sendNotifToCustomer(selectedCustomer.id, wTitle, wBody);
+  syncToSheets();
   showToast(workerTxnType==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
 };
 
@@ -1237,6 +1250,7 @@ window.addTransaction=async()=>{
   const notifTitle=type==='debt'?`💸 دين جديد — ${shop}`:`✅ تم تسجيل دفعتك — ${shop}`;
   const notifBody=type==='debt'?`تم تسجيل دين ${money(amount)} دج باسمك`:`تم تسجيل دفعة ${money(amount)} دج — شكراً لك`;
   sendNotifToCustomer(selectedCustomer.id, notifTitle, notifBody);
+  syncToSheets();
   showToast(type==='debt'?'✅ تم تسجيل الدين':'✅ تم تسجيل الدفعة');
 };
 
