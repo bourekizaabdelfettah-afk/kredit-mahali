@@ -557,6 +557,32 @@ function renderAdminStats(){
   $('a-stat-debt').textContent=money(totalDebt)+' دج';
   $('a-stat-reg').textContent=allCustomers.filter(c=>c.customer_type==='regular').length;
   $('a-stat-occ').textContent=allCustomers.filter(c=>c.customer_type!=='regular').length;
+
+  // إحصائيات اليوم
+  const today=new Date(); today.setHours(0,0,0,0);
+  let todayDebt=0, todayPay=0;
+  allCustomers.forEach(c=>(c.transactions||[]).forEach(t=>{
+    const d=new Date(t.date);d.setHours(0,0,0,0);
+    if(d.getTime()===today.getTime()){
+      if(t.type==='debt') todayDebt+=t.amount;
+      else todayPay+=t.amount;
+    }
+  }));
+  $('a-stat-today-debt').textContent=money(todayDebt)+' دج';
+  $('a-stat-today-pay').textContent=money(todayPay)+' دج';
+
+  // إحصائيات الشهر
+  const now=new Date();
+  let monthDebt=0, monthPay=0;
+  allCustomers.forEach(c=>(c.transactions||[]).forEach(t=>{
+    const d=new Date(t.date);
+    if(d.getFullYear()===now.getFullYear()&&d.getMonth()===now.getMonth()){
+      if(t.type==='debt') monthDebt+=t.amount;
+      else monthPay+=t.amount;
+    }
+  }));
+  $('a-stat-month-debt').textContent=money(monthDebt)+' دج';
+  $('a-stat-month-pay').textContent=money(monthPay)+' دج';
 }
 
 function renderAlertBanner(){
@@ -1591,6 +1617,9 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 .sg{display:grid;gap:10px;margin-bottom:16px;}
 .sg.c2{grid-template-columns:1fr 1fr;}
 .sg.c5{grid-template-columns:repeat(3,1fr);}
+.stats-section{margin-bottom:12px;}
+.stats-title{font-size:12px;font-weight:800;color:var(--text3);margin-bottom:6px;padding-right:4px;}
+.sv.g{color:#16a34a;}
 .sc{background:var(--card);border:1.5px solid var(--border);border-radius:14px;padding:14px 10px;text-align:center;box-shadow:var(--shadow);}
 .sv{font-size:22px;font-weight:900;color:var(--green);}
 .sv.r{color:var(--red);font-size:12px;}
@@ -1972,9 +2001,27 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
     <div class="sg c5">
       <div class="sc"><div class="sv" id="a-stat-total">0</div><div class="sl">كل الزبائن</div></div>
       <div class="sc"><div class="sv o" id="a-stat-late">0</div><div class="sl">⚠️ متأخرون</div></div>
-      <div class="sc"><div class="sv r" id="a-stat-debt">0</div><div class="sl">الديون</div></div>
+      <div class="sc"><div class="sv r" id="a-stat-debt">0</div><div class="sl">إجمالي الديون</div></div>
       <div class="sc"><div class="sv b" id="a-stat-reg">0</div><div class="sl">⭐ دائمون</div></div>
       <div class="sc"><div class="sv t" id="a-stat-occ">0</div><div class="sl">👤 عارضون</div></div>
+    </div>
+
+    <!-- إحصائيات اليوم -->
+    <div class="stats-section">
+      <div class="stats-title">📅 اليوم</div>
+      <div class="sg c2">
+        <div class="sc"><div class="sv r" id="a-stat-today-debt">0</div><div class="sl">💸 ديون اليوم</div></div>
+        <div class="sc"><div class="sv g" id="a-stat-today-pay">0</div><div class="sl">✅ مدفوعات اليوم</div></div>
+      </div>
+    </div>
+
+    <!-- إحصائيات الشهر -->
+    <div class="stats-section">
+      <div class="stats-title">📆 هذا الشهر</div>
+      <div class="sg c2">
+        <div class="sc"><div class="sv r" id="a-stat-month-debt">0</div><div class="sl">💸 ديون الشهر</div></div>
+        <div class="sc"><div class="sv g" id="a-stat-month-pay">0</div><div class="sl">✅ مدفوعات الشهر</div></div>
+      </div>
     </div>
 
     <button class="export-btn" onclick="doExport()">💾 تصدير نسخة احتياطية Excel</button>
