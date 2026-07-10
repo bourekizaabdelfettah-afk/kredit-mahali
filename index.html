@@ -560,6 +560,10 @@ function renderAdminStats(){
 
   // إحصائيات اليوم
   const today=new Date(); today.setHours(0,0,0,0);
+  const todayStr=new Date().toLocaleDateString('ar-DZ',{weekday:'long',day:'numeric',month:'long',year:'numeric'});
+  const monthStr=new Date().toLocaleDateString('ar-DZ',{month:'long',year:'numeric'});
+  $('a-stat-today-title').textContent=`🕐 اليوم — ${todayStr}`;
+  $('a-stat-month-title').textContent=`🗓 هذا الشهر — ${monthStr}`;
   let todayDebt=0, todayPay=0;
   allCustomers.forEach(c=>(c.transactions||[]).forEach(t=>{
     const d=new Date(t.date);d.setHours(0,0,0,0);
@@ -2008,7 +2012,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 
     <!-- إحصائيات اليوم -->
     <div class="stats-section">
-      <div class="stats-title">📅 اليوم</div>
+      <div class="stats-title" id="a-stat-today-title">🕐 اليوم</div>
       <div class="sg c2">
         <div class="sc"><div class="sv r" id="a-stat-today-debt">0</div><div class="sl">💸 ديون اليوم</div></div>
         <div class="sc"><div class="sv g" id="a-stat-today-pay">0</div><div class="sl">✅ مدفوعات اليوم</div></div>
@@ -2017,7 +2021,7 @@ body{font-family:'Cairo',sans-serif;min-height:100vh;background:var(--bg);color:
 
     <!-- إحصائيات الشهر -->
     <div class="stats-section">
-      <div class="stats-title">📆 هذا الشهر</div>
+      <div class="stats-title" id="a-stat-month-title">🗓 هذا الشهر</div>
       <div class="sg c2">
         <div class="sc"><div class="sv r" id="a-stat-month-debt">0</div><div class="sl">💸 ديون الشهر</div></div>
         <div class="sc"><div class="sv g" id="a-stat-month-pay">0</div><div class="sl">✅ مدفوعات الشهر</div></div>
